@@ -26,33 +26,61 @@
 - 公开场景信息写入 `generated_building/team_scene_info.json`。
 - 真值文件仅供裁判评估使用，不作为参赛算法输入。
 
-## 启动流程
+## 当前 Stage B 启动方式
 
-在 SimEnv 仓库根目录执行：
+当前正式入口是 `team_scripts/run_stage_b_seed.sh`。脚本统一完成随机场景生成、无界面
+Gazebo、A1 控制器、FAST-LIO 定位、四房探索、结果监视、日志保存和危险物评估，不需要
+手工启动 RViz，也不需要在 `junior_ctrl` 终端中输入状态编号。
 
-```bash
-source /opt/ros/noetic/setup.bash
-catkin_make -j
-source ./devel/setup.bash
-./auto.sh
-```
-
-`auto.sh` 会自动完成随机场景生成、Gazebo 启动、A1 模型与传感器启动、门/电梯控制服务启动和 `junior_ctrl` 控制器启动。更多启动方式见 [快速启动](docs/quick-start.md)。
-
-参赛队伍请统一使用 `./auto.sh` 启动比赛环境。单独生成场景时，也应使用 [快速启动](docs/quick-start.md) 中的 `generate_competition_scene.py` 命令。
-
-常用传感器开关：
+本机使用 Docker 容器 `simenv-noetic`。在宿主机的仓库根目录执行：
 
 ```bash
-# 关闭所有比赛传感器数据，但保留传感器模型显示
-ENABLE_SENSOR_DATA=0 ./auto.sh
-
-# 只开启 RealSense 深度相机/RGB/深度点云
-ENABLE_SENSOR_DATA=0 ENABLE_REALSENSE=1 ./auto.sh
-
-# 只开启 Livox 雷达和点云转换
-ENABLE_SENSOR_DATA=0 ENABLE_LIVOX=1 ./auto.sh
+docker exec \
+  -e STAGE_B_GUI=false \
+  -e STAGE_B_START_RVIZ=0 \
+  -e SIMNAV_CPU_LIST=0-5 \
+  -w /workspace/SimEnv \
+  simenv-noetic \
+  bash -lc './team_scripts/run_stage_b_seed.sh \
+    20260902 \
+    600 \
+    logs/stage_b_run \
+    coverage'
 ```
+
+参数依次为：
+
+1. `20260902`：随机 seed，可替换为其他整数。
+2. `600`：监视窗口的仿真秒数，不是墙钟时间。
+3. `logs/stage_b_run`：本轮输出根目录，实际结果位于其 `seed_<seed>/` 子目录。
+4. `coverage`：当前 Stage B 四房局部覆盖模式。
+
+`SIMNAV_CPU_LIST=0-5` 用于降低同机高负载任务对 Gazebo 和 FAST-LIO 启动稳定性的影响；
+可根据机器可用 CPU 调整或删除。脚本默认拒绝与已有 Gazebo、ROS、控制器或 Stage B
+进程共享资源，如提示已有进程，应先确认并结束旧测试，不要设置并发绕过保护。
+
+成功结束后重点检查：
+
+```text
+logs/stage_b_run/seed_20260902/result.json
+logs/stage_b_run/seed_20260902/danger_evaluation.json
+logs/stage_b_run/seed_20260902/detected_danger.json
+```
+
+通过条件是 `floor_complete=true`、四个 topology 均为 `COMPLETE`，且危险物评估
+`passed=true`。当前已验证 seed `20260902` 在 `523.186 s` 仿真时间完成四房进入、探索
+和退出，第一层危险物 3/3、漏检 0、误报 0。
+
+运行离线核心测试：
+
+```bash
+docker exec -w /workspace/SimEnv simenv-noetic \
+  bash -lc './team_scripts/run_stage_b_offline_tests.sh'
+```
+
+`auto.sh` 仍保留为基础仿真环境入口，但不会单独启动当前完整 Stage B 行为链。仅需手工
+调试环境或传感器时，可在容器内执行 `GUI=false ./auto.sh`。更多基础环境参数见
+[快速启动](docs/quick-start.md)。
 
 ## 算法接口
 
