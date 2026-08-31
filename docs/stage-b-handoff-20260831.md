@@ -2,7 +2,7 @@
 
 > 2026-08-31 最终追加：已收窄门洞缓存，只缓存 planner 已接纳的 actionable/front-station 门；RETURNING 仅允许 `RETURN_TO_CORRIDOR`；进门与返回仅在确认门宽内平移穿门线，返回门线只忽略连通簇不超过 2 格的 LIO endpoint 孤点，连续墙体、未知格、一般导航净空与实时激光急停均保持。离线核心测试 31/31 通过。真实无界面 Gazebo seed `20260902` 在 `523.186 s` 完成四房进入、局部覆盖和退出，`floor_complete=true`，危险物 3/3、漏检 0、误报 0。单 seed 功能闭环已通过；5-seed 稳定验收尚未完成。
 >
-> 公开代码仓库：https://github.com/wxz-521/SimEnv-Stage-B  
+> 公开代码仓库：https://github.com/wxz-521/SimEnv-Stage-B
 > 已验证基线提交：`808e8b33455dbe25434b4607aa3b9ff26c033d26`（`main`）
 
 > 交接日期：2026-08-31（Asia/Shanghai）  
