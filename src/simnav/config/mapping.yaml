@@ -1,0 +1,9 @@
+map_resolution: 0.05
+mapping_frequency: 2.0
+projection_frequency: 10.0
+height_filter_min: 0.08
+height_filter_max: 1.50
+range_min: 0.20
+range_max: 12.0
+small_gap_kernel: 5
+base_height: 0.265

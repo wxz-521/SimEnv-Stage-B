@@ -1,0 +1,79 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.75
+      Class: rviz/Map
+      Color Scheme: map
+      Enabled: true
+      Name: Stage B Map
+      Topic: /map
+    - Class: rviz/RobotModel
+      Collision Enabled: false
+      Enabled: true
+      Links:
+        All Links Enabled: true
+      Name: Robot Model
+      Robot Description: robot_description
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /simnav/camera_observed_markers
+      Name: Camera Observed Space
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /simnav/coverage_layers
+      Name: Coverage Sensor Layers
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /simnav/coverage_markers
+      Name: Coverage Target and Sphere Review
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /simnav/danger_markers
+      Name: Confirmed Danger Sources
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /simnav/danger_debug_markers
+      Name: Red Detection Diagnostics
+    - Class: rviz/Path
+      Enabled: true
+      Name: Coverage Path
+      Topic: /simnav/coverage_path
+  Enabled: true
+  Global Options:
+    Background Color: 36; 39; 46
+    Default Light: true
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/MoveCamera
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+  Value: true
+Views:
+  Current:
+    Angle: 0
+    Class: rviz/TopDownOrtho
+    Invert Z Axis: false
+    Name: Current View
+    Near Clip Distance: 0.01
+    Scale: 22
+    Target Frame: <Fixed Frame>
+    Value: TopDownOrtho (rviz)
+    X: 0
+    Y: 18
+  Saved: ~
+Window Geometry:
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Width: 1400

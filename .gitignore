@@ -1,0 +1,14 @@
+/build/
+/devel/
+/.simenv_build/
+/logs/
+/log/
+/results/
+__pycache__/
+*.pyc
+*.pyo
+*.bag
+*.pgm
+*.rrd
+.stage_b_runner.lock
+.room_structure_visual.lock

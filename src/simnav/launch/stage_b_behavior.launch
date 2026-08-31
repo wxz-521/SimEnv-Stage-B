@@ -1,0 +1,111 @@
+<launch>
+  <arg name="corridor_yaw" default="0.0"/>
+  <arg name="initial_forward_distance" default="14.5"/>
+  <arg name="result_dir" default="/workspace/SimEnv/results"/>
+  <node pkg="simnav" type="coverage_explorer_node.py" name="coverage_explorer" output="screen">
+    <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
+    <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
+    <param name="initial_forward_speed" value="0.45"/>
+    <param name="initial_centering_start_distance" value="10.5"/>
+    <!-- Keep driving to the configured fixed endpoint, but anchor the virtual
+         lobby/corridor gate where corridor centering first becomes reliable. -->
+    <param name="virtual_gate_forward_distance" value="10.5"/>
+
+    <!-- Conservative search envelope; terminal narrow corridor is inferred online. -->
+    <!-- The virtual entrance gate is the lobby/task boundary.  Keep only a
+         small inside buffer so the first target can never send the robot back
+         into the lobby. -->
+    <param name="task_back_extension" value="0.60"/>
+    <param name="task_entry_buffer" value="0.45"/>
+    <param name="task_forward_depth" value="35.0"/>
+    <param name="task_lateral_half_width" value="9.5"/>
+    <param name="task_corridor_half_width" value="1.1"/>
+    <!-- Full-width virtual topology gate at the lobby/corridor boundary.
+         This is not written into the navigation occupancy grid. -->
+    <param name="virtual_gate_half_width" value="1.1"/>
+    <param name="virtual_gate_depth" value="0.30"/>
+    <!-- Show only temporally confirmed map-derived doorways in RViz.  The
+         markers are diagnostics and never enter the navigation occupancy map. -->
+    <param name="show_room_virtual_doors" value="true"/>
+
+    <param name="robot_radius" value="0.38"/>
+    <param name="safety_margin" value="0.04"/>
+    <!--
+      Coverage still excludes a conservative 0.42 m wall band.  Executable
+      paths use the real 0.36 m-wide footprint (+0.02 m padding per side):
+      0.20 m is hard collision clearance and 0.32 m is only a soft A* cost.
+    -->
+    <param name="navigation_clearance" value="0.20"/>
+    <param name="preferred_clearance" value="0.32"/>
+    <param name="clearance_cost_weight" value="1.4"/>
+    <param name="turn_cost_weight" value="0.10"/>
+    <param name="frontier_cluster_radius" value="0.45"/>
+    <param name="frontier_revisit_radius" value="0.70"/>
+    <param name="information_radius" value="2.5"/>
+    <param name="replan_period" value="1.0"/>
+    <!-- Room-topology hysteresis: permit useful replans without target churn. -->
+    <param name="target_replace_min_age" value="4.0"/>
+    <param name="target_replace_gain_ratio" value="1.30"/>
+    <param name="target_replace_stall" value="8.0"/>
+    <param name="room_completion_miss_cycles" value="3"/>
+    <param name="portal_confirm_cycles" value="3"/>
+    <!-- When no portal is visible, advance exactly one metre, stop, and
+         rebuild portal evidence.  The three-metre phase cap ends just before
+         the front doorway station and cannot leak into rear-room transit. -->
+    <param name="door_search_step_distance" value="1.0"/>
+    <param name="door_search_wait_cycles" value="3"/>
+    <param name="door_search_front_limit" value="3.0"/>
+    <param name="door_search_rear_limit" value="3.0"/>
+    <!-- A temporally stable single doorway may be entered independently.
+         Opposing doors are used only to finish both rooms at one station. -->
+    <param name="minimum_room_stations" value="1"/>
+    <!-- The front pair is expected inside the entrance-near window.  Only
+         after both front rooms complete does a 12 m corridor-only transit
+         open the rear-door search window. -->
+    <param name="front_station_search_limit" value="10.0"/>
+    <param name="rear_transit_distance" value="12.0"/>
+    <!-- Each room uses 10% lidar + 90% RGB-D combined coverage.  A floor is
+         complete only after four rooms satisfy this threshold and the robot
+         has returned to the corridor from each one. -->
+    <param name="room_combined_coverage_target" value="0.85"/>
+    <param name="expected_rooms_per_floor" value="4"/>
+    <!-- Complete the two rooms at the nearest confirmed opposing door station
+         before the rear station is allowed to own a target. -->
+    <param name="far_room_first" value="false"/>
+    <param name="target_tolerance" value="0.35"/>
+    <param name="heading_tolerance" value="0.25"/>
+    <param name="motion_stop_distance" value="0.48"/>
+    <param name="motion_speed" value="0.45"/>
+    <param name="turn_speed" value="0.65"/>
+
+    <!-- Completion is an AND gate; lidar cannot hide missing RGB-D view. -->
+    <param name="laser_coverage_target" value="0.95"/>
+    <param name="camera_coverage_target" value="0.85"/>
+    <param name="combined_coverage_target" value="0.84"/>
+    <!-- RGB-D is the task sensor; lidar remains the navigation/frontier
+         assistant.  Keep the harmonic gate so lidar cannot hide a camera
+         blind spot, while giving camera information gain 80% of the target
+         selection weight. -->
+    <param name="camera_weight" value="0.90"/>
+    <param name="completion_stable_duration" value="3.0"/>
+
+    <!-- Stable 0.3 m low clusters become mandatory camera-review targets. -->
+    <param name="sphere_min_hits" value="3"/>
+    <param name="sphere_point_stride" value="2"/>
+    <param name="sphere_process_period" value="0.50"/>
+    <param name="sphere_review_hold" value="2.0"/>
+    <param name="camera_resolution" value="0.25"/>
+  </node>
+
+  <node pkg="simnav" type="danger_detector_node.py" name="danger_detector" output="screen">
+    <param name="confirmation_frames" value="3"/>
+    <param name="cluster_radius" value="0.75"/>
+    <param name="camera_observation_markers_enabled" value="true"/>
+    <param name="camera_observation_resolution" value="0.25"/>
+    <param name="camera_observation_pixel_stride" value="32"/>
+    <param name="camera_observation_max_cells" value="30000"/>
+    <param name="camera_observation_summary_period" value="0.50"/>
+    <param name="output_file" value="$(arg result_dir)/detected_danger.json"/>
+    <param name="debug_output_file" value="$(arg result_dir)/detected_danger_debug.json"/>
+  </node>
+</launch>

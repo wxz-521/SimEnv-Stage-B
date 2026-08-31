@@ -1,0 +1,8 @@
+<launch>
+  <param name="use_sim_time" value="true"/>
+  <include file="$(find simnav)/launch/offline_mapping.launch">
+    <arg name="rviz" value="false"/>
+    <arg name="motion_mode" value="cmd_vel"/>
+  </include>
+  <include file="$(find simnav)/launch/navigation.launch"/>
+</launch>

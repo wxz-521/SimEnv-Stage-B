@@ -1,0 +1,13 @@
+<launch>
+  <arg name="cloud_topic" default="/livox/Pointcloud2"/>
+  <arg name="scan_topic" default="/scan_2d"/>
+  <arg name="team_scene_info" default="/workspace/SimEnv/generated_building/team_scene_info.json"/>
+
+  <include file="$(find simnav)/launch/mapping.launch">
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="scan_topic" value="$(arg scan_topic)"/>
+    <arg name="team_scene_info" value="$(arg team_scene_info)"/>
+  </include>
+
+  <include file="$(find simnav)/launch/navigation.launch"/>
+</launch>
