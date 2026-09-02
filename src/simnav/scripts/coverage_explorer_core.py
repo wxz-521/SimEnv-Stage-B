@@ -1429,7 +1429,6 @@ class TaskCoveragePlanner:
         completed_front_sides: Iterable[str] = (),
         portal_prefix: str = "ROOM",
         force_laser_unknown: bool = False,
-        relaxed_portal_detection: bool = False,
     ) -> CoveragePlan:
         empty = CoverageSnapshot(0.0, 0.0, 0.0, 0, 0, 0)
         if grid is None or robot_pose is None or gate_center is None or forward_yaw is None:
@@ -1551,19 +1550,6 @@ class TaskCoveragePlanner:
             self.corridor_half_width,
             portal_prefix=str(portal_prefix),
         )
-        if not live_portals and relaxed_portal_detection:
-            live_portals = detect_room_portals(
-                grid,
-                gate_center,
-                forward_yaw,
-                extent.forward_limit,
-                self.lateral_half_width,
-                self.corridor_half_width,
-                portal_prefix=str(portal_prefix),
-                minimum_jamb_support=0.30,
-                passage_depth=0.45,
-            )
-            diagnostics["relaxed_portal_detection"] = bool(live_portals)
         confirmed = set(str(item) for item in confirmed_topologies)
         # Once a doorway has accumulated temporal confirmation, a sparse map
         # update must not erase the only route to an unvisited room.  Live
