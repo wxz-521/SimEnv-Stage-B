@@ -747,7 +747,6 @@ class CoverageExplorer:
             force_laser_unknown=self.floor_laser_isolated,
             relaxed_portal_detection=(
                 self.door_search_travel >= 1.5
-                and not self.portal_evidence
             ),
         )
         with self.lock:
