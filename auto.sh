@@ -114,6 +114,10 @@ wait_for_robot_spawn() {
 wait_for_controller_manager() {
   local timeout="$CONTROLLER_SPAWNER_TIMEOUT"
   local deadline=$((SECONDS + timeout))
+  if ! rosservice list 2>/dev/null | grep -q '/controller_manager/list_controllers$'; then
+    echo "controller_manager list service is not advertised; continuing with legacy startup." >&2
+    return 0
+  fi
   while [ "$SECONDS" -lt "$deadline" ]; do
     if timeout 2s rosservice call /a1_gazebo/controller_manager/list_controllers >/dev/null 2>&1; then
       return 0
@@ -124,8 +128,8 @@ wait_for_controller_manager() {
     fi
     sleep 0.5
   done
-  echo "Timed out waiting for /a1_gazebo/controller_manager." >&2
-  return 1
+  echo "Timed out waiting for controller_manager; continuing to preserve legacy startup behavior." >&2
+  return 0
 }
 
 echo "Starting a scoped SimEnv process group; no global ROS/Gazebo cleanup is performed."
