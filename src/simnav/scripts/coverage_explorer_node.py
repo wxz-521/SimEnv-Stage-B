@@ -1997,6 +1997,7 @@ class CoverageExplorer:
                 ]
             payload = {
                 "floor_index": self.floor_index,
+                "floor_laser_isolated": self.floor_laser_isolated,
                 "state": "FLOOR_COMPLETE" if self.floor_complete else "INITIAL_FORWARD" if self.gate_source is None else "COVERAGE_EXPLORATION",
                 "topology_region": self.topology_region,
                 "initial_forward_active": self.gate_source is None,

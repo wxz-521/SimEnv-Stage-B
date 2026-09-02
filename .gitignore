@@ -1,0 +1,8 @@
+/build/
+/devel/
+/.simenv_build/
+__pycache__/
+*.py[cod]
+generated_building/
+results/
+logs/

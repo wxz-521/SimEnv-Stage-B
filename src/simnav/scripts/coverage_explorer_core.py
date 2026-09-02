@@ -1524,6 +1524,7 @@ class TaskCoveragePlanner:
         visited = tuple((float(item[0]), float(item[1])) for item in visited_targets)
 
         diagnostics = {
+            "forced_laser_frontier": bool(force_laser_unknown),
             "assignment_portal_count": 0,
             "room_task_cells": 0,
             "room_eligible_cells": 0,
