@@ -358,21 +358,16 @@ class ElevatorTransition:
             if self._drive_to(pose, target):
                 self._set_state("ENTER_LOBBY")
         elif state == "ENTER_LOBBY":
-            target = (
-                self.elevator_portal[:2]
-                if self.elevator_portal is not None
-                else point_from_gate(gate, self.lobby_search_offset)
-            )
+            # The passively mapped portal center may sit close to one jamb and
+            # is not guaranteed to be directly reachable from the corridor.
+            # Keep it as evidence, but approach the proven clear lobby scan
+            # point before choosing the crossing heading from live lidar.
+            target = point_from_gate(gate, self.lobby_search_offset)
             if self._drive_to(pose, target, min(self.motion_speed, 0.30)):
                 self.search_index = 0
                 self.search_samples = []
                 self._set_state("SEARCH_ELEVATOR")
         elif state == "SEARCH_ELEVATOR":
-            if self.elevator_portal is not None:
-                self.elevator_heading = self.elevator_portal[2]
-                self._set_state("ALIGN_ELEVATOR")
-                self._publish_status()
-                return
             # The building topology fixes the elevator core on the right side
             # of the entrance corridor.  Scan a local angular fan and select
             # the deepest sensor-confirmed opening; no layout coordinates are used.
