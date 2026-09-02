@@ -426,6 +426,41 @@ class PlannerTest(unittest.TestCase):
             all(item.topology_id == remembered.topology_id for item in plan.targets)
         )
 
+    def test_locked_remembered_portal_survives_confirmation_dropout(self):
+        grid = synthetic_floor(include_second_opening=False)
+        remembered = RoomPortal("ROOM_L_7", "L", 3.5, 1.1, 1.0)
+        row0, column0 = grid.world_to_cell(3.0, 1.05)
+        row1, column1 = grid.world_to_cell(4.0, 1.15)
+        grid.data[
+            min(row0, row1) : max(row0, row1) + 1,
+            min(column0, column1) : max(column0, column1) + 1,
+        ] = 100
+        navigation = synthetic_floor(include_second_opening=False)
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0,
+            safety_margin=0.0,
+            navigation_clearance=0.05,
+            forward_depth=24.0,
+            lateral_half_width=9.5,
+            minimum_room_stations=1,
+        )
+        plan = planner.plan(
+            grid,
+            robot_pose=(0.0, 0.0, 0.0),
+            gate_center=(0.0, 0.0),
+            forward_yaw=0.0,
+            camera_seen=np.zeros(grid.data.shape, dtype=bool),
+            camera_target=1.0,
+            navigation_grid=navigation,
+            topology_lock=remembered.topology_id,
+            remembered_portals=(remembered,),
+        )
+        self.assertEqual(plan.diagnostics["assignment_portal_count"], 1)
+        self.assertTrue(plan.targets)
+        self.assertTrue(
+            all(item.topology_id == remembered.topology_id for item in plan.targets)
+        )
+
     def test_room_lock_never_falls_through_to_another_topology(self):
         grid = synthetic_floor()
         portals = detect_room_portals(grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1)

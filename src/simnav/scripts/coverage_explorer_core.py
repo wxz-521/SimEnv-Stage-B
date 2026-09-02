@@ -1557,7 +1557,14 @@ class TaskCoveragePlanner:
         # stable topology and is still gated by ``confirmed_topologies``.
         portals_by_id = {portal.topology_id: portal for portal in live_portals}
         for portal in remembered_portals:
-            if portal.topology_id in confirmed:
+            # Once the node has dispatched this exact doorway and locked its
+            # room, a transient map dropout must not remove the only ownership
+            # geometry mid-approach.  Unlocked cached gaps still require fresh
+            # temporal confirmation, so this does not relax door discovery.
+            if (
+                portal.topology_id in confirmed
+                or portal.topology_id == str(topology_lock)
+            ):
                 portals_by_id.setdefault(portal.topology_id, portal)
         portals = sorted(
             portals_by_id.values(), key=lambda item: (item.side, item.along)
