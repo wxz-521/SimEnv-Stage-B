@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import re
 import xml.etree.ElementTree as ET
 
 from building_generator_core.layout import (
@@ -35,6 +36,7 @@ STAIR_EXIT_LANDING_LENGTH = 0.9
 STAIR_LANDING_OFFSET = 0.2
 CORE_ROOM_BUFFER = 1.0
 VALIDATION_TOLERANCE = 1e-3
+UPPER_FLOOR_VISUAL_TRANSPARENCY = 0.8
 
 
 def export_sdf(layout: BuildingLayout, target: str, output_dir: str | Path) -> ArtifactPaths:
@@ -167,6 +169,7 @@ def _build_static_shell_model(layout: BuildingLayout) -> ET.Element:
         pose=(0.0, layout.footprint["length"] / 2.0, roof_z, 0.0, 0.0, 0.0),
         color="0.72 0.74 0.76 1",
     )
+    _apply_upper_floor_visual_transparency(model)
     return model
 
 
@@ -675,11 +678,39 @@ def _build_door_model(door: DoorSpec) -> ET.Element:
     ET.SubElement(model, "static").text = "false"
     ET.SubElement(model, "pose").text = _format_pose(door.pose)
     panel_width = door.width / 2.0
-    left_offset = -panel_width / 2.0
-    right_offset = panel_width / 2.0
-    _append_kinematic_panel(model, "left_panel", (0.0, left_offset, 0.0, 0.0, 0.0, 0.0), (DOOR_PANEL_THICKNESS, panel_width, door.height))
-    _append_kinematic_panel(model, "right_panel", (0.0, right_offset, 0.0, 0.0, 0.0, 0.0), (DOOR_PANEL_THICKNESS, panel_width, door.height))
+    panel_offset = door.width / 4.0
+    slide_offset = door.width / 2.0 + 0.06
+    recess_offset = 0.0
+    if door.kind == "elevator":
+        slide_offset = door.width / 2.0 + WALL_THICKNESS / 2.0 + DOOR_PANEL_THICKNESS
+        recess_offset = -(WALL_THICKNESS / 2.0 + DOOR_PANEL_THICKNESS / 2.0)
+    if door.initial_open:
+        left_pose = (recess_offset, -panel_offset - slide_offset, 0.0, 0.0, 0.0, 0.0)
+        right_pose = (recess_offset, panel_offset + slide_offset, 0.0, 0.0, 0.0, 0.0)
+    else:
+        left_pose = (0.0, -panel_offset, 0.0, 0.0, 0.0, 0.0)
+        right_pose = (0.0, panel_offset, 0.0, 0.0, 0.0, 0.0)
+    _append_kinematic_panel(model, "left_panel", left_pose, (DOOR_PANEL_THICKNESS, panel_width, door.height))
+    _append_kinematic_panel(model, "right_panel", right_pose, (DOOR_PANEL_THICKNESS, panel_width, door.height))
+    if door.floor_index > 0:
+        _set_visual_transparency(model, UPPER_FLOOR_VISUAL_TRANSPARENCY)
     return model
+
+
+def _apply_upper_floor_visual_transparency(model: ET.Element) -> None:
+    for link in model.findall("link"):
+        name = link.get("name", "")
+        floor_match = re.search(r"(?:^|_)floor_(\d+)(?:_|$)", name)
+        if name == "roof" or (floor_match and int(floor_match.group(1)) > 0):
+            _set_visual_transparency(link, UPPER_FLOOR_VISUAL_TRANSPARENCY)
+
+
+def _set_visual_transparency(element: ET.Element, transparency: float) -> None:
+    for visual in element.findall(".//visual"):
+        transparency_element = visual.find("transparency")
+        if transparency_element is None:
+            transparency_element = ET.SubElement(visual, "transparency")
+        transparency_element.text = f"{transparency:.2f}"
 
 
 def _build_elevator_model(layout: BuildingLayout, elevator_id: str) -> ET.Element:
@@ -731,7 +762,7 @@ def _door_config_entry(door: DoorSpec) -> dict[str, object]:
     payload = door.as_dict()
     payload["model_name"] = f"dynamic_{door.id}"
     panel_offset = door.width / 4.0
-    slide_offset = door.width / 4.0 + 0.06
+    slide_offset = door.width / 2.0 + 0.06
     recess_offset = 0.0
     if door.kind == "elevator":
         slide_offset = door.width / 2.0 + WALL_THICKNESS / 2.0 + DOOR_PANEL_THICKNESS

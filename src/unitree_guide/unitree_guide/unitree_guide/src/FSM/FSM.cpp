@@ -14,6 +14,7 @@
 #include <gazebo_msgs/SetModelConfiguration.h>
 #include <gazebo_msgs/SetModelState.h>
 #include <std_srvs/Empty.h>
+#include <std_msgs/String.h>
 #include <tf/transform_datatypes.h>
 #endif
 
@@ -81,6 +82,11 @@ FSM::FSM(CtrlComponents *ctrlComp)
     _stateList.moveBase = new State_move_base(_ctrlComp);
 #endif  // COMPILE_WITH_MOVE_BASE
     _stateList.rl = new State_RL(_ctrlComp);
+#ifdef COMPILE_WITH_ROS
+    ros::NodeHandle health_node;
+    _healthPublisher = health_node.advertise<std_msgs::String>(
+        "/simnav/controller_health", 1, true);
+#endif
     initialize();
 }
 
@@ -100,10 +106,16 @@ void FSM::run(){
     _ctrlComp->sendRecv();
     _ctrlComp->ioInterFreeDog->sendRecv();
     if(handleResetCommand()){
+#ifdef COMPILE_WITH_ROS
+        publishHealth("RESET");
+#endif
         absoluteWait(_startTime, (long long)(_ctrlComp->dt * 1000000));
         return;
     }
     if(!_ctrlComp->ioInter->hasFullStateFeedback()){
+#ifdef COMPILE_WITH_ROS
+        publishHealth("WAITING");
+#endif
         if(!_waitingForStateFeedback){
             std::cout << "[INFO] Waiting for Gazebo joint state feedback before accepting stand command." << std::endl;
             _waitingForStateFeedback = true;
@@ -116,6 +128,9 @@ void FSM::run(){
         _waitingForStateFeedback = false;
     }
     if(!_ctrlComp->lowState->isFinite()){
+#ifdef COMPILE_WITH_ROS
+        publishHealth("INVALID");
+#endif
         std::cout << "[WARNING] Gazebo state feedback is not finite; skipping control update." << std::endl;
         absoluteWait(_startTime, (long long)(_ctrlComp->dt * 1000000));
         return;
@@ -123,6 +138,9 @@ void FSM::run(){
     _ctrlComp->runWaveGen();
     _ctrlComp->estimator->run();
     if(!checkSafty()){
+#ifdef COMPILE_WITH_ROS
+        publishHealth("FALL");
+#endif
         if(!_fallSafetyLatched){
             std::cout << "[WARNING] Robot appears to have fallen. Switching to passive/down. Press 8 to reset pose." << std::endl;
             _fallSafetyLatched = true;
@@ -133,6 +151,15 @@ void FSM::run(){
         return;
     }
     _fallSafetyLatched = false;
+#ifdef COMPILE_WITH_ROS
+    if (_currentState == _stateList.passive) {
+        publishHealth("PASSIVE");
+    } else if (_currentState == _stateList.rl) {
+        publishHealth("RL");
+    } else {
+        publishHealth("ACTIVE");
+    }
+#endif
 
     if(_mode == FSMMode::NORMAL){
         _currentState->run();
@@ -154,6 +181,18 @@ void FSM::run(){
 
     absoluteWait(_startTime, (long long)(_ctrlComp->dt * 1000000));
 }
+
+#ifdef COMPILE_WITH_ROS
+void FSM::publishHealth(const std::string &state){
+    if(state == _lastHealthState){
+        return;
+    }
+    std_msgs::String message;
+    message.data = state;
+    _healthPublisher.publish(message);
+    _lastHealthState = state;
+}
+#endif
 
 FSMState* FSM::getNextState(FSMStateName stateName){
     switch (stateName)

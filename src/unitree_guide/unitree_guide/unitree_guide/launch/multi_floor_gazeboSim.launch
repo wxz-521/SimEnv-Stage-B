@@ -11,17 +11,17 @@
     <arg name="debug" default="false"/>
     <arg name="user_debug" default="false"/>
     <arg name="enable_sensor_data" default="true"/>
-    <arg name="enable_livox" default="$(arg enable_sensor_data)"/>
+    <arg name="enable_livox" default="false"/>
     <arg name="enable_livox_imu" default="$(arg enable_livox)"/>
     <arg name="enable_realsense" default="$(arg enable_sensor_data)"/>
     <arg name="enable_front_camera" default="false"/>
-    <arg name="enable_referee_odom" default="true"/>
-    <arg name="enable_ground_truth" default="true"/>
+    <arg name="enable_referee_odom" default="false"/>
+    <arg name="enable_ground_truth" default="false"/>
     <arg name="enable_foot_contact_sensor" default="false"/>
     <arg name="enable_foot_force_visual" default="false"/>
     <arg name="enable_joy_node" default="false"/>
-    <arg name="enable_pointcloud_converter" default="true"/>
-    <arg name="pointcloud_use_ground_truth_odom" default="true"/>
+    <arg name="enable_pointcloud_converter" default="$(arg enable_livox)"/>
+    <arg name="pointcloud_use_ground_truth_odom" default="false"/>
     <arg name="controller_spawner_timeout" default="$(optenv CONTROLLER_SPAWNER_TIMEOUT 120)"/>
 
     <arg name="world_file" default="$(optenv BUILDING_WORLD_FILE)"/>
@@ -53,11 +53,7 @@
            ENABLE_FOOT_FORCE_VISUAL:=$(arg enable_foot_force_visual)"/>
 
     <node pkg="gazebo_ros" type="spawn_model" name="urdf_spawner" respawn="false" output="screen"
-              args="-urdf -z $(arg robot_z) -y $(arg robot_y) -x $(arg robot_x) -Y $(arg robot_yaw) -model $(arg rname)_gazebo -param robot_description
-                    -J FR_hip_joint -0.35 -J FR_thigh_joint 1.36 -J FR_calf_joint -2.65
-                    -J FL_hip_joint 0.35 -J FL_thigh_joint 1.36 -J FL_calf_joint -2.65
-                    -J RR_hip_joint -0.50 -J RR_thigh_joint 1.36 -J RR_calf_joint -2.65
-                    -J RL_hip_joint 0.50 -J RL_thigh_joint 1.36 -J RL_calf_joint -2.65"/>
+          args="-urdf -z $(arg robot_z) -y $(arg robot_y) -x $(arg robot_x) -Y $(arg robot_yaw) -model $(arg rname)_gazebo -param robot_description"/>
 
     <node if="$(arg enable_referee_odom)" pkg="unitree_guide" type="state_from_gazebo" name="state_from_gazebo" args="0 0 0 0 0 0" output="screen">
         <param name="robot_name" value="$(arg rname)" />

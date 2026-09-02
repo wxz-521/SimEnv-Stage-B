@@ -101,17 +101,17 @@ SEED=77 FLOOR_COUNT=3 ROOMS_PER_FLOOR=4 ./auto.sh
 | `START_BUILDING_CONTROL` | `1` | 是否启动楼栋门/电梯控制服务 |
 | `ROBOT_SPAWN_TIMEOUT` | `120` | 等待 Gazebo 完成机器人模型生成的最长时间，单位 s |
 | `CONTROLLER_SPAWNER_TIMEOUT` | `120` | 等待 Gazebo 暴露 controller_manager 接口的最长时间，单位 s |
-| `UNITREE_CTRL_DT` | `0.004` | `junior_ctrl` 控制周期，单位 s。默认 250 Hz |
+| `UNITREE_CTRL_DT` | `0.002` | `junior_ctrl` 控制周期，单位 s。Unitree 官方默认 500 Hz |
 | `UNITREE_LOG_WAIT_WARNINGS` | `0` | 是否输出 `absoluteWait is not enough` 控制周期超时提示 |
 | `ENABLE_SENSOR_DATA` | `1` | 比赛传感器数据默认总开关；具体传感器可用下列变量覆盖 |
-| `ENABLE_LIVOX` | 跟随 `ENABLE_SENSOR_DATA` | 是否发布 Livox 雷达 `/scan` |
+| `ENABLE_LIVOX` | `1` | 是否发布 Livox 雷达 `/scan`；Gazebo 射线显示仍默认关闭 |
 | `ENABLE_LIVOX_IMU` | 跟随 `ENABLE_LIVOX` | 是否发布 `/livox/imu` |
 | `ENABLE_REALSENSE` | 跟随 `ENABLE_SENSOR_DATA` | 是否发布 RealSense RGB、深度图和深度点云 |
 | `ENABLE_DEPTH_CAMERA` | 空 | `ENABLE_REALSENSE` 的别名，便于只控制深度相机 |
 | `ENABLE_FRONT_CAMERA` | `0` | 是否启用可选前视 RGB 相机 |
 | `ENABLE_POINTCLOUD_CONVERTER` | 跟随 `ENABLE_LIVOX` | 是否将 `/scan` 转换为 `/livox/Pointcloud2` 和 `/livox/lidar2` |
-| `ENABLE_GROUND_TRUTH` | `1` | 是否发布 Gazebo 真值调试话题 |
-| `ENABLE_REFEREE_ODOM` | `1` | 是否发布 `/Odometry_gazebo` 和 `odom -> base` TF |
+| `ENABLE_GROUND_TRUTH` | `0` | 是否发布 Gazebo 真值调试话题 |
+| `ENABLE_REFEREE_ODOM` | `0` | 是否发布 `/Odometry_gazebo` 和 `odom -> base` TF |
 | `ENABLE_FOOT_CONTACT_SENSOR` | `0` | 是否启用四个足端 ContactSensor 及接触力话题 |
 | `UNITREE_STAND_DURATION` | `3.0` | 按 `2` 后从当前姿态平滑站立的时长，单位 s |
 | `START_VIRTUAL_JOY` | `0` | 是否启动虚拟手柄。该功能通常需要 `uinput` 权限 |
@@ -187,14 +187,14 @@ rosrun building_obstacles generate_competition_scene.py \
 - 键盘输入 `6`：切换到 RL `/cmd_vel` 模式。
 - RL `/cmd_vel` 模式下订阅 `/cmd_vel`，消息类型为 `geometry_msgs/Twist`。
 
-`junior_ctrl` 当前默认控制周期为 `0.004 s`，即 250 Hz。在 Gazebo GUI、随机楼栋、传感器和 RL 推理同时运行时，部分机器仍可能出现：
+`junior_ctrl` 当前默认保持 Unitree 官方控制周期 `0.002 s`，即 500 Hz。在 Gazebo GUI、随机楼栋、传感器和 RL 推理同时运行时，部分机器仍可能出现：
 
 ```text
 [WARNING] The waitTime=4000 of function absoluteWait is not enough!
 The program has already cost 5110us.
 ```
 
-该提示表示单次控制循环耗时超过了 4 ms 目标周期，不代表场景生成失败。当前 `auto.sh` 默认设置 `UNITREE_LOG_WAIT_WARNINGS=0`，不会打印该刷屏日志；需要排查控制周期时可显式开启。
+该提示表示单次控制循环耗时超过了 2 ms 目标周期，不代表场景生成失败。当前 `auto.sh` 默认设置 `UNITREE_LOG_WAIT_WARNINGS=0`，不会打印该刷屏日志；需要排查控制周期时可显式开启。
 
 ```bash
 UNITREE_LOG_WAIT_WARNINGS=1 ./auto.sh

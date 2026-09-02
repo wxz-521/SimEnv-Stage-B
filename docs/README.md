@@ -11,3 +11,4 @@
 | [结果格式与评估方法](evaluation.md) | `detected_danger.json`、一对一匹配、识别概率、虚警率和客观分 |
 | [传感器与 ROS 话题](sensors-and-topics.md) | 传感器位姿、话题、频率和坐标系 |
 | [常见问题](troubleshooting.md) | 控制周期 warning、服务异常、依赖缺失等问题 |
+| [阶段 B 进度](stage-b-progress.md) | 定位、建图和导航各组件的实际验收状态 |

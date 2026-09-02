@@ -1,0 +1,56 @@
+<launch>
+  <arg name="cloud_topic" default="/livox/Pointcloud2"/>
+  <arg name="scan_topic" default="/scan_2d"/>
+  <arg name="team_scene_info" default="/workspace/SimEnv/generated_building/team_scene_info.json"/>
+
+  <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="simnav_cloud_to_scan" output="screen">
+    <remap from="cloud_in" to="$(arg cloud_topic)"/>
+    <remap from="scan" to="$(arg scan_topic)"/>
+    <param name="target_frame" value="base"/>
+    <param name="transform_tolerance" value="0.05"/>
+    <param name="min_height" value="0.08"/>
+    <param name="max_height" value="1.50"/>
+    <param name="angle_min" value="-3.14159265"/>
+    <param name="angle_max" value="3.14159265"/>
+    <param name="angle_increment" value="0.00872665"/>
+    <param name="scan_time" value="0.10"/>
+    <param name="range_min" value="0.20"/>
+    <param name="range_max" value="12.0"/>
+    <param name="use_inf" value="true"/>
+    <param name="concurrency_level" value="1"/>
+  </node>
+
+  <rosparam command="load" file="$(find fast_lio)/config/simenv.yaml"/>
+  <param name="feature_extract_enable" value="false"/>
+  <!-- Keep all valid Livox points for scan registration; FAST-LIO still uses
+       the 0.25 m map voxel filter below for its incremental map. -->
+  <param name="point_filter_num" value="1"/>
+  <param name="max_iteration" value="3"/>
+  <param name="filter_size_surf" value="0.25"/>
+  <param name="filter_size_map" value="0.25"/>
+  <param name="cube_side_length" value="120.0"/>
+  <param name="runtime_pos_log_enable" value="false"/>
+  <node pkg="fast_lio" type="fastlio_mapping" name="fast_lio" output="screen"/>
+  <node pkg="simnav" type="lio_health_monitor_node.py" name="lio_health_monitor" output="screen">
+    <param name="cloud_topic" value="/cloud_registered"/>
+    <param name="minimum_effective_points" value="5"/>
+  </node>
+
+  <node pkg="simnav" type="lio_localization_bridge_node.py" name="localization_bridge" output="screen">
+    <param name="max_loop_correction" value="1.0"/>
+    <param name="max_loop_rotation" value="0.12"/>
+    <param name="command_response_scale" value="0.95"/>
+    <param name="command_timeout" value="0.35"/>
+    <param name="minimum_motion_fraction" value="0.20"/>
+    <param name="max_corridor_constraint" value="3.0"/>
+    <param name="team_scene_info" value="$(arg team_scene_info)"/>
+  </node>
+  <node pkg="simnav" type="lio_occupancy_node.py" name="lio_occupancy" output="screen">
+    <!-- Avoid a second 4x decimation of the already downsampled registered scan. -->
+    <param name="point_stride" value="1"/>
+  </node>
+  <node pkg="simnav" type="map_views_node.py" name="map_views" output="screen">
+    <param name="mapping_frequency" value="2.0"/>
+    <param name="small_gap_kernel" value="5"/>
+  </node>
+</launch>

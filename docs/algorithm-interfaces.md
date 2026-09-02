@@ -65,10 +65,10 @@ generated_building/team_scene_info.json
 
 ## 控制周期
 
-当前启动脚本默认控制周期为 `0.004 s`：
+当前启动脚本保持 Unitree 官方默认控制周期 `0.002 s`：
 
 ```bash
-UNITREE_CTRL_DT=0.004
+UNITREE_CTRL_DT=0.002
 ```
 
 键盘 `2` 为站立，`4` 为 RL 键盘行走模式，`6` 为 RL `/cmd_vel` 模式。进入 `4` 后，可在 `junior_ctrl` 终端使用 `W/S` 前后、`A/D` 左右、`J/L` 转向、空格停止。进入 `6` 后，保持原有 RL 逻辑，参赛算法可发布 `/cmd_vel` 控制机器人移动。机器人摔倒后可按 `8` 复位到出生点，复位后处于 passive/down 状态，需要再按 `2` 站起。

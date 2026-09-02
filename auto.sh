@@ -3,6 +3,15 @@ set -euo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$WORKSPACE_DIR"
+if [ -n "${SIMENV_DEVEL_DIR:-}" ]; then
+  SIMENV_DEVEL_DIR="$SIMENV_DEVEL_DIR"
+elif [ -f "$WORKSPACE_DIR/devel/setup.bash" ]; then
+  SIMENV_DEVEL_DIR="$WORKSPACE_DIR/devel"
+elif [ -f "$WORKSPACE_DIR/.simenv_build/devel/setup.bash" ]; then
+  SIMENV_DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+else
+  SIMENV_DEVEL_DIR="$WORKSPACE_DIR/devel"
+fi
 
 as_ros_bool() {
   case "$1" in
@@ -26,26 +35,28 @@ AUTO_UNPAUSE_DELAY="${AUTO_UNPAUSE_DELAY:-6}"
 START_CONTROLLER="${START_CONTROLLER:-1}"
 START_VIRTUAL_JOY="${START_VIRTUAL_JOY:-0}"
 CONTROLLER_FOREGROUND="${CONTROLLER_FOREGROUND:-1}"
+CONTROLLER_USE_PTY="$(as_ros_bool "${CONTROLLER_USE_PTY:-1}")"
 START_BUILDING_CONTROL="${START_BUILDING_CONTROL:-1}"
 ENABLE_SENSOR_DATA_DEFAULT="${ENABLE_SENSORS:-1}"
 ENABLE_SENSOR_DATA="$(as_ros_bool "${ENABLE_SENSOR_DATA:-$ENABLE_SENSOR_DATA_DEFAULT}")"
-ENABLE_LIVOX="$(as_ros_bool "${ENABLE_LIVOX:-$ENABLE_SENSOR_DATA}")"
+ENABLE_LIVOX="$(as_ros_bool "${ENABLE_LIVOX:-1}")"
 ENABLE_LIVOX_IMU="$(as_ros_bool "${ENABLE_LIVOX_IMU:-$ENABLE_LIVOX}")"
 ENABLE_REALSENSE_INPUT="${ENABLE_REALSENSE:-${ENABLE_DEPTH_CAMERA:-$ENABLE_SENSOR_DATA}}"
 ENABLE_REALSENSE="$(as_ros_bool "$ENABLE_REALSENSE_INPUT")"
 ENABLE_FRONT_CAMERA="$(as_ros_bool "${ENABLE_FRONT_CAMERA:-0}")"
-ENABLE_REFEREE_ODOM="$(as_ros_bool "${ENABLE_REFEREE_ODOM:-1}")"
-ENABLE_GROUND_TRUTH="$(as_ros_bool "${ENABLE_GROUND_TRUTH:-1}")"
+ENABLE_REFEREE_ODOM="$(as_ros_bool "${ENABLE_REFEREE_ODOM:-0}")"
+ENABLE_GROUND_TRUTH="$(as_ros_bool "${ENABLE_GROUND_TRUTH:-0}")"
 ENABLE_FOOT_CONTACT_SENSOR="$(as_ros_bool "${ENABLE_FOOT_CONTACT_SENSOR:-0}")"
 ENABLE_FOOT_FORCE_VISUAL="$(as_ros_bool "${ENABLE_FOOT_FORCE_VISUAL:-0}")"
 ENABLE_JOY_NODE="$(as_ros_bool "${ENABLE_JOY_NODE:-0}")"
 ENABLE_POINTCLOUD_CONVERTER="$(as_ros_bool "${ENABLE_POINTCLOUD_CONVERTER:-$ENABLE_LIVOX}")"
-POINTCLOUD_USE_GROUND_TRUTH_ODOM="$(as_ros_bool "${POINTCLOUD_USE_GROUND_TRUTH_ODOM:-1}")"
+POINTCLOUD_USE_GROUND_TRUTH_ODOM="$(as_ros_bool "${POINTCLOUD_USE_GROUND_TRUTH_ODOM:-0}")"
 WRITE_GENERATED_TRUTH_COPY="$(as_ros_bool "${WRITE_GENERATED_TRUTH_COPY:-1}")"
-UNITREE_CTRL_DT="${UNITREE_CTRL_DT:-0.004}"
+UNITREE_CTRL_DT="${UNITREE_CTRL_DT:-0.002}"
 UNITREE_LOG_WAIT_WARNINGS="$(as_ros_bool "${UNITREE_LOG_WAIT_WARNINGS:-0}")"
 ROBOT_SPAWN_TIMEOUT="${ROBOT_SPAWN_TIMEOUT:-120}"
 CONTROLLER_SPAWNER_TIMEOUT="${CONTROLLER_SPAWNER_TIMEOUT:-120}"
+GAZEBO_STARTUP_SETTLE_SECONDS="${GAZEBO_STARTUP_SETTLE_SECONDS:-1}"
 GAZEBO_PHYSICS_MAX_STEP_SIZE="${GAZEBO_PHYSICS_MAX_STEP_SIZE:-0.002}"
 GAZEBO_PHYSICS_REAL_TIME_UPDATE_RATE="${GAZEBO_PHYSICS_REAL_TIME_UPDATE_RATE:-500}"
 GAZEBO_PHYSICS_ODE_ITERS="${GAZEBO_PHYSICS_ODE_ITERS:-40}"
@@ -64,8 +75,9 @@ schedule_unpause_physics() {
     sleep "$AUTO_UNPAUSE_DELAY"
     for _ in $(seq 1 40); do
       if rosservice list 2>/dev/null | grep -q '^/gazebo/unpause_physics$'; then
-        rosservice call /gazebo/unpause_physics >/dev/null 2>&1 || true
-        exit 0
+        if rosservice call /gazebo/unpause_physics >/dev/null 2>&1; then
+          exit 0
+        fi
       fi
       sleep 0.25
     done
@@ -78,52 +90,62 @@ wait_for_robot_spawn() {
   while [ "$SECONDS" -lt "$deadline" ]; do
     if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
       echo "roslaunch exited during startup. Last log lines:" >&2
-      tail -n 80 "$WORKSPACE_DIR/logs/competition_gazebo.log" >&2
+      tail -n 80 "$RUNTIME_LOG_DIR/competition_gazebo.log" >&2
       exit 1
     fi
     if timeout 1s rosservice call /gazebo/get_model_state "{model_name: 'a1_gazebo', relative_entity_name: 'world'}" 2>/dev/null | grep -q "success: True"; then
       return
     fi
-    if grep -a -q "Successfully spawned entity" "$WORKSPACE_DIR/logs/competition_gazebo.log" 2>/dev/null; then
-      return
-    fi
-    if grep -a -E -q "Spawn service failed|Service call failed" "$WORKSPACE_DIR/logs/competition_gazebo.log" 2>/dev/null; then
+    if grep -a -E -q "Spawn service failed|Service call failed" "$RUNTIME_LOG_DIR/competition_gazebo.log" 2>/dev/null; then
       echo "Robot spawn failed. Last log lines:" >&2
-      tail -n 80 "$WORKSPACE_DIR/logs/competition_gazebo.log" >&2
+      tail -n 80 "$RUNTIME_LOG_DIR/competition_gazebo.log" >&2
       exit 1
     fi
     sleep 0.2
   done
 
   echo "Timed out waiting for robot spawn. Last log lines:" >&2
-  tail -n 80 "$WORKSPACE_DIR/logs/competition_gazebo.log" >&2
+  tail -n 80 "$RUNTIME_LOG_DIR/competition_gazebo.log" >&2
   exit 1
 }
 
-echo "Terminating previous Gazebo, launch, controller, and optional joystick processes..."
-pkill -f "roslaunch unitree_guide multi_floor_gazeboSim.launch" 2>/dev/null || true
-pkill -f "building_generator_classic_control" 2>/dev/null || true
-pkill -f "gzserver|gzclient|gazebo" 2>/dev/null || true
-pkill -f "junior_ctrl" 2>/dev/null || true
-pkill -f "virtual_joy.py" 2>/dev/null || true
+wait_for_controller_manager() {
+  local timeout="$CONTROLLER_SPAWNER_TIMEOUT"
+  local deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if timeout 2s rosservice call /a1_gazebo/controller_manager/list_controllers >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
+      echo "Gazebo exited before controller_manager became ready." >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+  echo "Timed out waiting for /a1_gazebo/controller_manager." >&2
+  return 1
+}
+
+echo "Starting a scoped SimEnv process group; no global ROS/Gazebo cleanup is performed."
 
 echo "Sourcing ROS environment..."
 source /opt/ros/noetic/setup.bash
-if [ ! -f "$WORKSPACE_DIR/devel/setup.bash" ]; then
-  echo "Missing $WORKSPACE_DIR/devel/setup.bash. Run catkin_make in this workspace before starting the simulation." >&2
+if [ ! -f "$SIMENV_DEVEL_DIR/setup.bash" ]; then
+  echo "Missing $SIMENV_DEVEL_DIR/setup.bash. Build the workspace before starting the simulation." >&2
   exit 1
 fi
-source "$WORKSPACE_DIR/devel/setup.bash"
+source "$SIMENV_DEVEL_DIR/setup.bash"
 export ROS_PACKAGE_PATH="$WORKSPACE_DIR/src:${ROS_PACKAGE_PATH:-}"
-export CMAKE_PREFIX_PATH="$WORKSPACE_DIR/devel:${CMAKE_PREFIX_PATH:-}"
+export CMAKE_PREFIX_PATH="$SIMENV_DEVEL_DIR:${CMAKE_PREFIX_PATH:-}"
 export PYTHONPATH="$WORKSPACE_DIR/src/building_generator_classic:$WORKSPACE_DIR/src/building_generator_core:${PYTHONPATH:-}"
 
 GENERATOR_SCRIPT="$WORKSPACE_DIR/src/building_obstacles/scripts/generate_competition_scene.py"
 BUILDING_CONTROL_SCRIPT="$WORKSPACE_DIR/src/building_generator_classic/scripts/building_generator_classic_control"
 UNITREE_GAZEBO_MODELS="$WORKSPACE_DIR/src/unitree_guide/unitree_ros/unitree_gazebo/models"
-SCENE_OUTPUT_DIR="$WORKSPACE_DIR/generated_building"
-RESULTS_DIR="$WORKSPACE_DIR/results"
-mkdir -p "$SCENE_OUTPUT_DIR" "$RESULTS_DIR" "$WORKSPACE_DIR/logs"
+SCENE_OUTPUT_DIR="${SIMENV_SCENE_OUTPUT_DIR:-$WORKSPACE_DIR/generated_building}"
+RESULTS_DIR="${SIMENV_RESULTS_DIR:-$WORKSPACE_DIR/results}"
+RUNTIME_LOG_DIR="${SIMENV_RUNTIME_LOG_DIR:-$WORKSPACE_DIR/logs}"
+mkdir -p "$SCENE_OUTPUT_DIR" "$RESULTS_DIR" "$RUNTIME_LOG_DIR"
 
 echo "Generating competition scene..."
 GENERATOR_ARGS=(
@@ -162,7 +184,7 @@ export UNITREE_CTRL_DT
 export UNITREE_LOG_WAIT_WARNINGS
 export CONTROLLER_SPAWNER_TIMEOUT
 export GAZEBO_MODEL_PATH="${GAZEBO_MODEL_PATH:-}:$SCENE_OUTPUT_DIR:$UNITREE_GAZEBO_MODELS"
-export GAZEBO_PLUGIN_PATH="$WORKSPACE_DIR/devel/lib:${GAZEBO_PLUGIN_PATH:-}"
+export GAZEBO_PLUGIN_PATH="$SIMENV_DEVEL_DIR/lib:${GAZEBO_PLUGIN_PATH:-}"
 
 echo "=========================================="
 echo "Competition scene is ready"
@@ -193,8 +215,8 @@ echo "=========================================="
 
 if [ "$START_VIRTUAL_JOY" = "1" ]; then
   echo "Starting virtual joystick. This may require uinput permissions."
-  rosrun unitree_guide virtual_joy.py > "$WORKSPACE_DIR/logs/virtual_joy.log" 2>&1 &
-  echo $! > "$WORKSPACE_DIR/logs/virtual_joy.pid"
+  rosrun unitree_guide virtual_joy.py > "$RUNTIME_LOG_DIR/virtual_joy.log" 2>&1 &
+  echo $! > "$RUNTIME_LOG_DIR/virtual_joy.pid"
 fi
 
 echo "Launching Gazebo, Unitree A1 model, sensors, and ROS interfaces..."
@@ -220,18 +242,22 @@ roslaunch unitree_guide multi_floor_gazeboSim.launch \
   enable_joy_node:="$ENABLE_JOY_NODE" \
   enable_pointcloud_converter:="$ENABLE_POINTCLOUD_CONVERTER" \
   pointcloud_use_ground_truth_odom:="$POINTCLOUD_USE_GROUND_TRUTH_ODOM" \
-  > "$WORKSPACE_DIR/logs/competition_gazebo.log" 2>&1 &
+  > "$RUNTIME_LOG_DIR/competition_gazebo.log" 2>&1 &
 LAUNCH_PID=$!
-echo "$LAUNCH_PID" > "$WORKSPACE_DIR/logs/competition_gazebo.pid"
+echo "$LAUNCH_PID" > "$RUNTIME_LOG_DIR/competition_gazebo.pid"
 wait_for_robot_spawn
+if [ "$GAZEBO_STARTUP_SETTLE_SECONDS" != "0" ]; then
+  sleep "$GAZEBO_STARTUP_SETTLE_SECONDS"
+fi
+wait_for_controller_manager
 
 if [ "$START_BUILDING_CONTROL" = "1" ]; then
   echo "Starting building door/elevator control service..."
   python3 "$BUILDING_CONTROL_SCRIPT" \
     --door-config "$SCENE_OUTPUT_DIR/door_config.yaml" \
     --elevator-config "$SCENE_OUTPUT_DIR/elevator_config.yaml" \
-    > "$WORKSPACE_DIR/logs/building_control.log" 2>&1 &
-  echo $! > "$WORKSPACE_DIR/logs/building_control.pid"
+    > "$RUNTIME_LOG_DIR/building_control.log" 2>&1 &
+  echo $! > "$RUNTIME_LOG_DIR/building_control.pid"
 fi
 
 if [ "$START_CONTROLLER" = "1" ]; then
@@ -241,16 +267,21 @@ if [ "$START_CONTROLLER" = "1" ]; then
     echo "Use keyboard input in this terminal: 2 = stand, 4 = RL keyboard walk, 6 = RL /cmd_vel mode, 8 = reset."
     echo "In RL keyboard walk mode: W/S = forward/back, A/D = left/right, J/L = turn, Space = stop."
     schedule_unpause_physics
-    "$WORKSPACE_DIR/devel/lib/unitree_guide/junior_ctrl" || true
+    "$SIMENV_DEVEL_DIR/lib/unitree_guide/junior_ctrl" || true
     echo "junior_ctrl exited; keeping Gazebo running for inspection. Press Ctrl-C to stop this script."
     wait "$LAUNCH_PID"
     exit 0
   else
     echo "Starting junior_ctrl controller in the background. Keyboard state switching may not be available."
     echo "UNITREE_CTRL_DT=$UNITREE_CTRL_DT seconds."
-    "$WORKSPACE_DIR/devel/lib/unitree_guide/junior_ctrl" \
-      > "$WORKSPACE_DIR/logs/junior_ctrl.log" 2>&1 &
-    echo $! > "$WORKSPACE_DIR/logs/junior_ctrl.pid"
+    if [ "$CONTROLLER_USE_PTY" = "true" ]; then
+      script -qefc "$SIMENV_DEVEL_DIR/lib/unitree_guide/junior_ctrl" /dev/null \
+        > "$RUNTIME_LOG_DIR/junior_ctrl.log" 2>&1 &
+    else
+      "$SIMENV_DEVEL_DIR/lib/unitree_guide/junior_ctrl" \
+        > "$RUNTIME_LOG_DIR/junior_ctrl.log" 2>&1 &
+    fi
+    echo $! > "$RUNTIME_LOG_DIR/junior_ctrl.pid"
     schedule_unpause_physics
   fi
 else

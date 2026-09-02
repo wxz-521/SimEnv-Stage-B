@@ -12,7 +12,7 @@
     <!-- Debug mode will hung up the robot, use "true" or "false" to switch it. -->
     <arg name="user_debug" default="false"/>
     <arg name="enable_sensor_data" default="true"/>
-    <arg name="enable_livox" default="$(arg enable_sensor_data)"/>
+    <arg name="enable_livox" default="false"/>
     <arg name="enable_livox_imu" default="$(arg enable_livox)"/>
     <arg name="enable_realsense" default="$(arg enable_sensor_data)"/>
     <arg name="enable_front_camera" default="false"/>

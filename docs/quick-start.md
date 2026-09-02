@@ -23,6 +23,28 @@ catkin_make -j
 source ./devel/setup.bash
 ```
 
+### 容器复现（ROS1/ROS2 宿主机通用）
+
+宿主机不需要安装 ROS。Docker 版本会把仓库挂载到 `/workspace/SimEnv`，编译产物默认写入
+仓库的 `devel/`，不会依赖开发者私有的 `.simenv_build/`：
+
+```bash
+docker build -t simenv-noetic -f docker/Dockerfile .
+docker run --rm -it --net=host \
+  -v "$PWD":/workspace/SimEnv \
+  -v /opt/libtorch:/opt/libtorch:ro \
+  -e LIBTORCH_ROOT=/opt/libtorch \
+  simenv-noetic bash -lc \
+  'SIMENV_BUILD_JOBS=2 ./docker/build_workspace.sh'
+```
+
+`/opt/libtorch` 是宿主机准备好的 LibTorch 目录，必须包含
+`share/cmake/Torch/TorchConfig.cmake`；也可以替换成其他挂载路径。该依赖受上游许可证和
+体积限制，不复制进本仓库镜像。
+
+低性能机器将 `SIMENV_BUILD_JOBS` 设为 `1` 或 `2`。编译后按仓库根目录的
+`README.md` 启动命令运行；ROS2 宿主机同样使用该 ROS1 Noetic 容器，不需要转换算法节点。
+
 ## 一键启动
 
 ```bash
@@ -96,17 +118,18 @@ ENABLE_SENSOR_DATA=0 ENABLE_LIVOX=1 ./auto.sh
 | `START_BUILDING_CONTROL` | `1` | 是否启动楼栋门/电梯控制服务 |
 | `ROBOT_SPAWN_TIMEOUT` | `120` | 等待 Gazebo 完成机器人模型生成的最长时间，单位 s |
 | `CONTROLLER_SPAWNER_TIMEOUT` | `120` | 等待 Gazebo 暴露 controller_manager 接口的最长时间，单位 s |
-| `UNITREE_CTRL_DT` | `0.004` | `junior_ctrl` 控制周期，单位 s |
+| `GAZEBO_STARTUP_SETTLE_SECONDS` | `1` | 机器人生成后等待 Gazebo/控制器稳定的时间；正常主机仅增加约 1 秒，低性能机器可调大，设为 `0` 可跳过额外停顿 |
+| `UNITREE_CTRL_DT` | `0.002` | `junior_ctrl` 控制周期，单位 s（Unitree 官方默认 500 Hz） |
 | `UNITREE_LOG_WAIT_WARNINGS` | `0` | 是否输出 `absoluteWait is not enough` 控制周期超时提示 |
 | `ENABLE_SENSOR_DATA` | `1` | 比赛传感器数据默认总开关；具体传感器可用下列变量覆盖 |
-| `ENABLE_LIVOX` | 跟随 `ENABLE_SENSOR_DATA` | 是否发布 Livox 雷达 `/scan` |
+| `ENABLE_LIVOX` | `1` | 是否加载 Livox 激光插件并发布 `/scan`；Gazebo 射线显示仍默认关闭 |
 | `ENABLE_LIVOX_IMU` | 跟随 `ENABLE_LIVOX` | 是否发布 `/livox/imu` |
 | `ENABLE_REALSENSE` | 跟随 `ENABLE_SENSOR_DATA` | 是否发布 RealSense RGB、深度图和深度点云 |
 | `ENABLE_DEPTH_CAMERA` | 空 | `ENABLE_REALSENSE` 的别名，便于只控制深度相机 |
 | `ENABLE_FRONT_CAMERA` | `0` | 是否启用可选前视 RGB 相机 |
 | `ENABLE_POINTCLOUD_CONVERTER` | 跟随 `ENABLE_LIVOX` | 是否将 `/scan` 转换为 `/livox/Pointcloud2` 和 `/livox/lidar2` |
-| `ENABLE_GROUND_TRUTH` | `1` | 是否发布 Gazebo 真值调试话题 |
-| `ENABLE_REFEREE_ODOM` | `1` | 是否发布 `/Odometry_gazebo` 和 `odom -> base` TF |
+| `ENABLE_GROUND_TRUTH` | `0` | 是否发布 Gazebo 真值调试话题 |
+| `ENABLE_REFEREE_ODOM` | `0` | 是否发布 `/Odometry_gazebo` 和 `odom -> base` TF |
 | `ENABLE_FOOT_CONTACT_SENSOR` | `0` | 是否启用四个足端 ContactSensor 及接触力话题 |
 | `START_VIRTUAL_JOY` | `0` | 是否启动虚拟手柄，通常需要 `uinput` 权限 |
 | `ROBOT_X` | `0.0` | 机器人出生点 x |

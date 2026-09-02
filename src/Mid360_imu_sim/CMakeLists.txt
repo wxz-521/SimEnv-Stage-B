@@ -33,6 +33,4 @@ catkin_package(
 )
 
 add_library(livox_laser_simulation SHARED src/livox_points_plugin.cpp src/livox_ode_multiray_shape.cpp)
-target_link_libraries(livox_laser_simulation ${catkin_LIBRARIES} RayPlugin)
-
-target_link_libraries(livox_laser_simulation libprotobuf.so.9)
+target_link_libraries(livox_laser_simulation ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES} RayPlugin)

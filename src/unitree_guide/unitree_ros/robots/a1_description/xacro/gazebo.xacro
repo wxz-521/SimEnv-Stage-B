@@ -297,7 +297,7 @@
             <sensor type="ray" name="laser_livox">
                 <always_on>true</always_on>
                 <pose>0 0 0 0 0 0</pose>
-                <visualize>true</visualize>
+                <visualize>false</visualize>
                 <update_rate>10</update_rate>
                 <ray>
                     <scan>
@@ -352,10 +352,10 @@
                             <stddev>0.005</stddev>
                         </noise>
                     </ray>
-                    <visualize>true</visualize>
+                    <visualize>false</visualize>
                     <samples>24000</samples>
-                    <downsample>1</downsample>
-                    <csv_file_name>package://a1_description/scan_mode/mid360.csv</csv_file_name>
+                    <downsample>10</downsample>
+                    <csv_file_name>$(find a1_description)/scan_mode/mid360.csv</csv_file_name>
                     <ros_topic>/scan</ros_topic>
                     <frameName>laser_livox</frameName>
                 </plugin>

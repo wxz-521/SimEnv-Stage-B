@@ -16,7 +16,7 @@ The program has already cost 5110us.
 当前 `auto.sh` 默认设置：
 
 ```bash
-UNITREE_CTRL_DT=0.004
+UNITREE_CTRL_DT=0.002
 ```
 
 默认情况下，`auto.sh` 会设置 `UNITREE_LOG_WAIT_WARNINGS=0`，不再打印这条刷屏 warning。需要观察控制周期耗时时，可显式开启：

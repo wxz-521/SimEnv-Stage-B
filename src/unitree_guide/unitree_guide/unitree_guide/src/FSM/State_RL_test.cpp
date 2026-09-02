@@ -3,6 +3,7 @@
 ***********************************************************************/
 #include <iostream>
 #include <cmath>
+#include <cstdlib>
 #include "FSM/State_RL_test.h"
 
 namespace {
@@ -25,6 +26,8 @@ State_RL::State_RL(CtrlComponents *ctrlComp)
                 :FSMState(ctrlComp, FSMStateName::RL, "RL")
 {
     load_policy();
+    policy_service = nh.advertiseService(
+        "/unitree/select_plane_policy", &State_RL::selectPlanePolicy, this);
     gravity(0,0) = 0.0;
     gravity(1,0) = 0.0;
     gravity(2,0) = -0.98;
@@ -186,7 +189,9 @@ void State_RL::infer_thread_callback()
         std::vector<torch::jit::IValue> inputs;
         inputs.push_back(flattened_obs);
         // std::cout << "flattened_obs: " << flattened_obs << std::endl;
-        actions_tensor = model.get_method("act_inference")(inputs).toTensor().to(torch::kCPU).squeeze();
+        torch::jit::script::Module& active_model =
+            use_plane_policy.load() ? plane_model : model;
+        actions_tensor = active_model.get_method("act_inference")(inputs).toTensor().to(torch::kCPU).squeeze();
         if (debug==true){
             torch::Tensor input_tensor = torch::arange(1, 226).view({1, 225}).to(torch::kFloat32).to(device); // 注意范围是 [start, end)
             std::vector<torch::jit::IValue> test;
@@ -283,15 +288,15 @@ void State_RL::refresh_rl_obs(){
     //gazebo simulation mode
     if (real == false)
     {
-        for (int i=0; i<4; i++) {
-            base_w_orientation[i] = _ctrlComp->ioInter->_base_w_ori[i];
-        }
+        base_w_orientation[0] = _lowState->imu.quaternion[1];
+        base_w_orientation[1] = _lowState->imu.quaternion[2];
+        base_w_orientation[2] = _lowState->imu.quaternion[3];
+        base_w_orientation[3] = _lowState->imu.quaternion[0];
         for (int i=0; i<3; i++) {
-            base_w_angular_vel[i] = _ctrlComp->ioInter->_base_w_angular_vel[i];
+            base_w_angular_vel[i] = _lowState->imu.gyroscope[i];
         }
         torch::Tensor orientation_tensor = torch::from_blob(base_w_orientation.data(), {int64_t(base_w_orientation.size())}, opts).unsqueeze(0).clone();
-        torch::Tensor w_angular_vel_tensor = torch::from_blob(base_w_angular_vel.data(), {int64_t(base_w_angular_vel.size())}, opts).unsqueeze(0).clone();
-        base_ang_vel_tensor = quat_rotate_inverse(orientation_tensor, w_angular_vel_tensor).squeeze().clone();
+        base_ang_vel_tensor = torch::from_blob(base_w_angular_vel.data(), {int64_t(base_w_angular_vel.size())}, opts).clone();
         projected_gravity_tensor = quat_rotate_inverse(orientation_tensor, gravity_tensor.unsqueeze(0)).squeeze().clone();
         
         //订阅cmd_vel
@@ -511,7 +516,10 @@ torch::Tensor State_RL::quat_rotate_inverse(const torch::Tensor& q, const torch:
 
 void State_RL::load_policy()
 {
-    model_path = "src/unitree_guide/logs/policy_act_inference_stair.pt";
+    const char *policy_path = std::getenv("UNITREE_POLICY_PATH");
+    model_path = (policy_path != nullptr && policy_path[0] != '\0')
+        ? policy_path
+        : "src/unitree_guide/logs/policy_act_inference_stair.pt";
     std::cout << model_path << std::endl;
     // load model from check point
     std::cout << "cuda::is_available():" << torch::cuda::is_available() << std::endl;
@@ -524,6 +532,35 @@ void State_RL::load_policy()
     model.to(device);
     std::cout << "load model to device!" << std::endl;
     model.eval();
+
+    const char *plane_policy_path = std::getenv("UNITREE_PLANE_POLICY_PATH");
+    const std::string plane_path =
+        (plane_policy_path != nullptr && plane_policy_path[0] != '\0')
+        ? plane_policy_path
+        : "src/unitree_guide/logs/policy_act_inference_plane.pt";
+    std::cout << plane_path << std::endl;
+    plane_model = torch::jit::load(plane_path);
+    plane_model.to(device);
+    plane_model.eval();
+    std::cout << "plane policy preloaded successfully" << std::endl;
+}
+
+bool State_RL::selectPlanePolicy(std_srvs::SetBool::Request& request,
+                                 std_srvs::SetBool::Response& response)
+{
+    const double motion = std::fabs(current_cmd_vel_.linear_x)
+        + std::fabs(current_cmd_vel_.linear_y)
+        + std::fabs(current_cmd_vel_.angular_z);
+    if(motion > 0.03){
+        response.success = false;
+        response.message = "policy switch rejected while cmd_vel is non-zero";
+        return true;
+    }
+    use_plane_policy.store(request.data);
+    response.success = true;
+    response.message = request.data ? "plane policy active" : "stair policy active";
+    std::cout << "[INFO] " << response.message << std::endl;
+    return true;
 }
 
 void State_RL::printSegments(const torch::Tensor& tensor, int segment_size, const std::vector<int>& sub_sizes) {

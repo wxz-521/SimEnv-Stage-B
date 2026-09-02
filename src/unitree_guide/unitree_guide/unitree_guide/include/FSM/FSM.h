@@ -19,6 +19,10 @@
     #include "FSM/State_move_base.h"
 #endif  // COMPILE_WITH_MOVE_BASE
 #include "FSM/State_RL_test.h"
+#ifdef COMPILE_WITH_ROS
+#include <ros/ros.h>
+#include <std_msgs/String.h>
+#endif
 
 struct FSMStateList{
     FSMState *invalid;
@@ -63,6 +67,10 @@ private:
     bool resetGazeboRobot();
     void forcePassiveState();
     void setResetDownCommand();
+#ifdef COMPILE_WITH_ROS
+    void publishHealth(const std::string &state);
+    ros::Publisher _healthPublisher;
+#endif
     CtrlComponents *_ctrlComp;
     FSMState *_currentState;
     FSMState *_nextState;
@@ -74,6 +82,9 @@ private:
     bool _waitingForStateFeedback = false;
     bool _resetCommandLatched = false;
     bool _fallSafetyLatched = false;
+#ifdef COMPILE_WITH_ROS
+    std::string _lastHealthState;
+#endif
 };
 
 

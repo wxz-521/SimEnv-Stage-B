@@ -8,7 +8,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from building_generator_core.constraints import BuildingConstraints
-from building_generator_core.exporter import export_sdf
+from building_generator_core.exporter import UPPER_FLOOR_VISUAL_TRANSPARENCY, export_sdf
 from building_generator_core.generator import generate_layout
 import yaml
 
@@ -70,6 +70,57 @@ class ExporterTest(unittest.TestCase):
             self.assertNotIn("stair_core_floor_0_east_upper", link_names)
             self.assertNotIn("dynamic_stair_fire_floor_0", Path(artifact_paths.world_sdf).read_text())
             self.assertTrue(all(door.kind != "stair_fire" for door in layout.door_specs))
+
+    def test_upper_floors_are_visually_transparent_but_keep_collisions(self) -> None:
+        constraints = BuildingConstraints.from_dict(
+            {
+                "seed": 19,
+                "floor_count": 3,
+                "rooms_per_floor": 4,
+                "building_footprint_limit": {"width": 28.0, "length": 54.0},
+            }
+        )
+        layout = generate_layout(constraints)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_paths = export_sdf(layout, target="gazebo_classic", output_dir=tmpdir)
+            root = ET.parse(artifact_paths.world_sdf).getroot()
+            building_model = next(
+                model for model in root.findall(".//model")
+                if model.get("name") == "generated_building"
+            )
+            expected = f"{UPPER_FLOOR_VISUAL_TRANSPARENCY:.2f}"
+
+            floor_zero = building_model.find("./link[@name='slab_floor_0_0']")
+            floor_one = building_model.find("./link[@name='slab_floor_1_0']")
+            floor_two = building_model.find("./link[@name='slab_floor_2_0']")
+            roof = building_model.find("./link[@name='roof']")
+
+            self.assertIsNotNone(floor_zero)
+            self.assertIsNotNone(floor_one)
+            self.assertIsNotNone(floor_two)
+            self.assertIsNotNone(roof)
+            self.assertIsNone(floor_zero.find("./visual/transparency"))
+            self.assertEqual(floor_one.findtext("./visual/transparency"), expected)
+            self.assertEqual(floor_two.findtext("./visual/transparency"), expected)
+            self.assertEqual(roof.findtext("./visual/transparency"), expected)
+            self.assertIsNone(floor_one.find("./collision/transparency"))
+            self.assertIsNotNone(floor_one.find("./collision/geometry"))
+
+            floor_zero_door = next(
+                model for model in root.findall(".//model")
+                if model.get("name") == "dynamic_elevator_floor_0"
+            )
+            floor_two_door = next(
+                model for model in root.findall(".//model")
+                if model.get("name") == "dynamic_elevator_floor_2"
+            )
+            self.assertIsNone(floor_zero_door.find(".//visual/transparency"))
+            self.assertTrue(floor_two_door.findall(".//visual/transparency"))
+            self.assertTrue(
+                all(item.text == expected for item in floor_two_door.findall(".//visual/transparency"))
+            )
+            self.assertFalse(floor_two_door.findall(".//collision/transparency"))
 
     def test_second_stair_flight_connects_turn_and_upper_landings(self) -> None:
         constraints = BuildingConstraints.from_dict(
@@ -157,6 +208,51 @@ class ExporterTest(unittest.TestCase):
             self.assertGreater(abs(left_open[1]), required_offset)
             self.assertGreater(abs(right_open[1]), required_offset)
             self.assertEqual(elevator_door["motion_duration"], 25.0)
+
+    def test_main_entrance_open_panels_clear_the_doorway(self) -> None:
+        constraints = BuildingConstraints.from_dict(
+            {
+                "seed": 77,
+                "floor_count": 2,
+                "rooms_per_floor": 4,
+                "building_footprint_limit": {"width": 30.0, "length": 60.0},
+            }
+        )
+        layout = generate_layout(constraints)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_paths = export_sdf(layout, target="gazebo_classic", output_dir=tmpdir)
+            door_config = yaml.safe_load(Path(artifact_paths.door_config).read_text())
+            entrance = next(item for item in door_config["doors"] if item["kind"] == "main_entrance")
+            panel_width = entrance["width"] / 2.0
+            required_offset = entrance["width"] / 2.0 + panel_width / 2.0
+
+            self.assertGreater(abs(entrance["panel_poses"]["left_open"][1]), required_offset)
+            self.assertGreater(abs(entrance["panel_poses"]["right_open"][1]), required_offset)
+
+    def test_initially_open_doors_start_at_open_panel_poses(self) -> None:
+        constraints = BuildingConstraints.from_dict(
+            {
+                "seed": 77,
+                "floor_count": 2,
+                "rooms_per_floor": 4,
+                "building_footprint_limit": {"width": 30.0, "length": 60.0},
+            }
+        )
+        layout = generate_layout(constraints)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_paths = export_sdf(layout, target="gazebo_classic", output_dir=tmpdir)
+            root = ET.parse(artifact_paths.world_sdf).getroot()
+            door_config = yaml.safe_load(Path(artifact_paths.door_config).read_text())
+
+            for door in (item for item in door_config["doors"] if item["initial_open"]):
+                model = next(model for model in root.findall(".//model") if model.get("name") == door["model_name"])
+                for panel_name in ("left_panel", "right_panel"):
+                    actual = [float(value) for value in model.find(f"./link[@name='{panel_name}']/pose").text.split()]
+                    expected = door["panel_poses"][f"{panel_name.replace('_panel', '')}_open"]
+                    for actual_value, expected_value in zip(actual, expected):
+                        self.assertAlmostEqual(actual_value, expected_value, places=4)
 
     def test_elevator_car_opening_faces_the_lobby_door_side(self) -> None:
         constraints = BuildingConstraints.from_dict(

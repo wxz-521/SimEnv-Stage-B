@@ -7,6 +7,7 @@
 #include <ros/node_handle.h>
 #include <tf/transform_broadcaster.h>
 #include <gazebo/plugins/RayPlugin.hh>
+#include <gazebo/common/Events.hh>
 #include "livox_ode_multiray_shape.h"
 
 namespace gazebo {
@@ -73,6 +74,8 @@ class LivoxPointsPlugin : public RayPlugin {
     virtual void OnNewLaserScans();
 
  private:
+    void ActivateSensor();
+
     void InitializeRays(std::vector<std::pair<int, AviaRotateInfo>>& points_pair,
                         boost::shared_ptr<physics::LivoxOdeMultiRayShape>& ray_shape);
 
@@ -88,6 +91,7 @@ class LivoxPointsPlugin : public RayPlugin {
     msgs::LaserScanStamped laserMsg;
     transport::NodePtr node;
     gazebo::sensors::SensorPtr raySensor;
+    gazebo::event::ConnectionPtr activationConnection;
     std::vector<AviaRotateInfo> aviaInfos;
 
     std::shared_ptr<ros::NodeHandle> rosNode;

@@ -14,6 +14,7 @@
 #include "livox_laser_simulation/csv_reader.hpp"
 #include "livox_laser_simulation/livox_ode_multiray_shape.h"
 #include <sdf/sdf_config.h>
+#include <functional>
 
 namespace gazebo {
 
@@ -39,6 +40,8 @@ void convertDataToRotateInfo(const std::vector<std::vector<double>> &datas, std:
 }
 
 void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr sdf) {
+    raySensor = _parent;
+    raySensor->SetActive(false);
     std::vector<std::vector<double>> datas;
     // std::string file_name = sdf->Get<std::string>("csv_file_name");
     // ROS_INFO_STREAM("load csv file name:" << file_name);
@@ -77,7 +80,6 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     rosNode.reset(new ros::NodeHandle);
     rosPointPub = rosNode->advertise<sensor_msgs::PointCloud>(curr_scan_topic, 5);
 
-    raySensor = _parent;
     auto sensor_pose = raySensor->Pose();
     SendRosTf(sensor_pose, raySensor->ParentName(), raySensor->Name());
 
@@ -124,6 +126,13 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
         end_point = maxDist * axis + offset.Pos();
         rayShape->AddRay(start_point, end_point);
     }
+    activationConnection = event::Events::ConnectWorldUpdateEnd(
+        std::bind(&LivoxPointsPlugin::ActivateSensor, this));
+}
+
+void LivoxPointsPlugin::ActivateSensor() {
+    raySensor->SetActive(true);
+    activationConnection.reset();
 }
 
 void LivoxPointsPlugin::OnNewLaserScans() {
@@ -158,7 +167,9 @@ void LivoxPointsPlugin::OnNewLaserScans() {
             //}
             //if (verticle_index < verticalRayCount && horizon_index < rayCount) {
             //   auto index = (verticalRayCount - verticle_index - 1) * rayCount + horizon_index;
-                auto range = rayShape->GetRange(pair.first);
+                // ODE reports distance from the ray start, which is minDist away
+                // from the sensor origin. Convert it back to sensor range first.
+                auto range = rayShape->GetRange(pair.first) + minDist;
                 auto intensity = rayShape->GetRetro(pair.first);
                 if (range >= RangeMax()) {
                     range = 0;

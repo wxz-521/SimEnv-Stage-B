@@ -1,16 +1,10 @@
 cmake_minimum_required(VERSION 3.14)
 project(unitree_guide)
-# 添加 torch 依赖，默认使用 /home/ros/Guoyulun/Download/libtorch（如不同，请提供正确路径）
-# 确保 CMake 可以加载 libtorch 附带的 cmake 模块（例如 CheckLinkerFlag）
-list(APPEND CMAKE_MODULE_PATH "/home/ros/Guoyulun/Download/libtorch/share/cmake/Caffe2/public")
-list(APPEND CMAKE_MODULE_PATH "/home/ros/Guoyulun/Download/libtorch/share/cmake")
-if(NOT DEFINED TORCH_CUDA_ARCH_LIST)
-    set(TORCH_CUDA_ARCH_LIST "5.2" CACHE STRING "CUDA architectures for libtorch")
+set(LIBTORCH_ROOT "$ENV{LIBTORCH_ROOT}" CACHE PATH "Path to the LibTorch distribution")
+if(LIBTORCH_ROOT)
+    list(APPEND CMAKE_PREFIX_PATH "${LIBTORCH_ROOT}")
 endif()
-if(NOT CMAKE_CUDA_FLAGS MATCHES "-arch=sm_")
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_52" CACHE STRING "CUDA flags" FORCE)
-endif()
-find_package(Torch REQUIRED PATHS "/home/ros/Guoyulun/Download/libtorch")
+find_package(Torch REQUIRED)
 
 set(ROBOT_TYPE A1)         # The type of robot, support Go1 and A1 currently
 set(PLATFORM amd64)         # The platform to compile, support amd64 and arm64
@@ -155,8 +149,7 @@ file(GLOB_RECURSE SRC_LIST
     "src/*/*.cc"
 )
 
-set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)  # torch 编译加速
-set(CMAKE_CXX_STANDARD 17) #torch编译加速
+set(CMAKE_CXX_STANDARD 17)
 
 
 add_executable(state_from_gazebo src/state_from_gazebo.cpp)

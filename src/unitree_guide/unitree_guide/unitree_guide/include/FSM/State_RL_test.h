@@ -11,6 +11,7 @@
 #include <string>
 #include <torch/torch.h>
 #include <torch/script.h>
+#include <std_srvs/SetBool.h>
 #define HISTORY_LEN 5
 class State_RL : public FSMState{
 
@@ -29,6 +30,8 @@ public:
     void open_amp_save_file();
     void close_amp_save_file();
     void load_policy();
+    bool selectPlanePolicy(std_srvs::SetBool::Request& request,
+                           std_srvs::SetBool::Response& response);
     void printSegments(const torch::Tensor& tensor, int segment_size, const std::vector<int>& sub_sizes);
     void printTensorHorizontal(const torch::Tensor& tensor, const std::string& name);
     torch::Tensor quat_rotate_inverse(const torch::Tensor& q, const torch::Tensor& v);
@@ -40,6 +43,9 @@ private:
     at::string model_path;
     torch::DeviceType device;
     torch::jit::script::Module model;
+    torch::jit::script::Module plane_model;
+    std::atomic_bool use_plane_policy{false};
+    ros::ServiceServer policy_service;
     enum Color {
         STOP,
         RUNNING,

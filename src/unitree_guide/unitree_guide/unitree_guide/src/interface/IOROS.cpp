@@ -160,12 +160,6 @@ void IOROS::initRecv(){
     _servo_sub[9] = _nm.subscribe("/" + _robot_name + "_gazebo/RL_hip_controller/state", 1, &IOROS::RLhipCallback, this);
     _servo_sub[10] = _nm.subscribe("/" + _robot_name + "_gazebo/RL_thigh_controller/state", 1, &IOROS::RLthighCallback, this);
     _servo_sub[11] = _nm.subscribe("/" + _robot_name + "_gazebo/RL_calf_controller/state", 1, &IOROS::RLcalfCallback, this);
-    _foot_states_sub[0] = _nm.subscribe("/ground_truth/FL_foot", 1, &IOROS::FL_footCallback, this);
-    _foot_states_sub[1] = _nm.subscribe("/ground_truth/FR_foot", 1, &IOROS::FR_footCallback, this);
-    _foot_states_sub[2] = _nm.subscribe("/ground_truth/RL_foot", 1, &IOROS::RL_footCallback, this);
-    _foot_states_sub[3] = _nm.subscribe("/ground_truth/RR_foot", 1, &IOROS::RR_footCallback, this);
-    _base_w_sub = _nm.subscribe("/ground_truth/base_w", 1, &IOROS::baseWorldCallback, this);
-    _base_t_sub = _nm.subscribe("/ground_truth/base_trunk", 1, &IOROS::baseTrunkCallback, this);
     _time_sub = _nm.subscribe("/clock", 1, &IOROS::timeCallback, this);
     joy_sub = _nm.subscribe("/joy", 1, &IOROS::joyCallback, this);
 }
