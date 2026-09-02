@@ -58,7 +58,6 @@ UNITREE_CTRL_DT="${UNITREE_CTRL_DT:-0.002}"
 UNITREE_LOG_WAIT_WARNINGS="$(as_ros_bool "${UNITREE_LOG_WAIT_WARNINGS:-0}")"
 ROBOT_SPAWN_TIMEOUT="${ROBOT_SPAWN_TIMEOUT:-120}"
 CONTROLLER_SPAWNER_TIMEOUT="${CONTROLLER_SPAWNER_TIMEOUT:-120}"
-GAZEBO_STARTUP_SETTLE_SECONDS="${GAZEBO_STARTUP_SETTLE_SECONDS:-1}"
 GAZEBO_PHYSICS_MAX_STEP_SIZE="${GAZEBO_PHYSICS_MAX_STEP_SIZE:-0.002}"
 GAZEBO_PHYSICS_REAL_TIME_UPDATE_RATE="${GAZEBO_PHYSICS_REAL_TIME_UPDATE_RATE:-500}"
 GAZEBO_PHYSICS_ODE_ITERS="${GAZEBO_PHYSICS_ODE_ITERS:-40}"
@@ -109,27 +108,6 @@ wait_for_robot_spawn() {
   echo "Timed out waiting for robot spawn. Last log lines:" >&2
   tail -n 80 "$RUNTIME_LOG_DIR/competition_gazebo.log" >&2
   exit 1
-}
-
-wait_for_controller_manager() {
-  local timeout="$CONTROLLER_SPAWNER_TIMEOUT"
-  local deadline=$((SECONDS + timeout))
-  if ! rosservice list 2>/dev/null | grep -q '/controller_manager/list_controllers$'; then
-    echo "controller_manager list service is not advertised; continuing with legacy startup." >&2
-    return 0
-  fi
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if timeout 2s rosservice call /a1_gazebo/controller_manager/list_controllers >/dev/null 2>&1; then
-      return 0
-    fi
-    if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
-      echo "Gazebo exited before controller_manager became ready." >&2
-      return 1
-    fi
-    sleep 0.5
-  done
-  echo "Timed out waiting for controller_manager; continuing to preserve legacy startup behavior." >&2
-  return 0
 }
 
 echo "Starting a scoped SimEnv process group; no global ROS/Gazebo cleanup is performed."
@@ -252,10 +230,6 @@ roslaunch unitree_guide multi_floor_gazeboSim.launch \
 LAUNCH_PID=$!
 echo "$LAUNCH_PID" > "$RUNTIME_LOG_DIR/competition_gazebo.pid"
 wait_for_robot_spawn
-if [ "$GAZEBO_STARTUP_SETTLE_SECONDS" != "0" ]; then
-  sleep "$GAZEBO_STARTUP_SETTLE_SECONDS"
-fi
-wait_for_controller_manager
 
 if [ "$START_BUILDING_CONTROL" = "1" ]; then
   echo "Starting building door/elevator control service..."

@@ -118,7 +118,6 @@ ENABLE_SENSOR_DATA=0 ENABLE_LIVOX=1 ./auto.sh
 | `START_BUILDING_CONTROL` | `1` | 是否启动楼栋门/电梯控制服务 |
 | `ROBOT_SPAWN_TIMEOUT` | `120` | 等待 Gazebo 完成机器人模型生成的最长时间，单位 s |
 | `CONTROLLER_SPAWNER_TIMEOUT` | `120` | 等待 Gazebo 暴露 controller_manager 接口的最长时间，单位 s |
-| `GAZEBO_STARTUP_SETTLE_SECONDS` | `1` | 机器人生成后等待 Gazebo/控制器稳定的时间；正常主机仅增加约 1 秒，低性能机器可调大，设为 `0` 可跳过额外停顿 |
 | `UNITREE_CTRL_DT` | `0.002` | `junior_ctrl` 控制周期，单位 s（Unitree 官方默认 500 Hz） |
 | `UNITREE_LOG_WAIT_WARNINGS` | `0` | 是否输出 `absoluteWait is not enough` 控制周期超时提示 |
 | `ENABLE_SENSOR_DATA` | `1` | 比赛传感器数据默认总开关；具体传感器可用下列变量覆盖 |
