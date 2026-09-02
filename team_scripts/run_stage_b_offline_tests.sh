@@ -4,7 +4,9 @@ set -euo pipefail
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -n "${SIMENV_DEVEL_DIR:-}" ]; then
   DEVEL_DIR="$SIMENV_DEVEL_DIR"
-elif [ -f "$WORKSPACE_DIR/devel/setup.bash" ]; then
+elif [ -f "$WORKSPACE_DIR/devel/setup.bash" ] \
+  && [ -x "$WORKSPACE_DIR/devel/lib/unitree_guide/junior_ctrl" ] \
+  && [ -f "$WORKSPACE_DIR/devel/lib/libunitree_legged_control.so" ]; then
   DEVEL_DIR="$WORKSPACE_DIR/devel"
 else
   DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
