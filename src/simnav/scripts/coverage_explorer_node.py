@@ -745,6 +745,10 @@ class CoverageExplorer:
             completed_front_sides=tuple(self.completed_front_sides),
             portal_prefix=self.floor_prefix,
             force_laser_unknown=self.floor_laser_isolated,
+            relaxed_portal_detection=(
+                self.door_search_travel >= 1.5
+                and not self.portal_evidence
+            ),
         )
         with self.lock:
             seen_portal_ids = set()
