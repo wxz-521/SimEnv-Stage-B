@@ -100,8 +100,8 @@
     <param name="completion_stable_duration" value="3.0"/>
 
     <!-- Stable 0.3 m low clusters become mandatory camera-review targets. -->
-    <param name="sphere_min_hits" value="3"/>
-    <param name="sphere_point_stride" value="2"/>
+    <param name="sphere_min_hits" value="2"/>
+    <param name="sphere_point_stride" value="1"/>
     <param name="sphere_process_period" value="0.50"/>
     <param name="sphere_review_hold" value="2.0"/>
     <param name="camera_resolution" value="0.25"/>
