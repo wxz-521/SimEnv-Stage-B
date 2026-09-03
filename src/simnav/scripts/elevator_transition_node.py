@@ -13,7 +13,6 @@ import rospy
 import tf.transformations as transformations
 from building_generator_interfaces.srv import CallElevator
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool
@@ -30,7 +29,6 @@ from elevator_transition_core import (
     point_from_gate,
     target_heading,
 )
-from coverage_explorer_core import GridView, TaskCoveragePlanner
 
 
 class ElevatorTransition:
@@ -63,15 +61,10 @@ class ElevatorTransition:
         self.turn_speed = float(rospy.get_param("~turn_speed", 0.45))
         self.stop_distance = float(rospy.get_param("~stop_distance", 0.42))
         self.target_tolerance = float(rospy.get_param("~target_tolerance", 0.35))
-        self.lobby_blocked_arrival_tolerance = float(
-            rospy.get_param("~lobby_blocked_arrival_tolerance", 0.85)
-        )
         self.heading_tolerance = float(rospy.get_param("~heading_tolerance", 0.12))
 
         self.state = self.WAITING
         self.pose = None
-        self.source_pose = None
-        self.navigation_grid = None
         self.last_pose_stamp = rospy.Time(0)
         self.gate = None
         self.gate_source = None
@@ -90,24 +83,12 @@ class ElevatorTransition:
         self.two_floor_mission_complete = False
         self.state_started = rospy.Time.now()
         self.travel_anchor = None
-        self.route = ()
-        self.route_index = 0
-        self.route_state = None
-        self.route_target = None
-        self.route_planner = TaskCoveragePlanner(
-            robot_radius=float(rospy.get_param("~robot_radius", 0.38)),
-            safety_margin=float(rospy.get_param("~safety_margin", 0.04)),
-            navigation_clearance=float(rospy.get_param("~navigation_clearance", 0.20)),
-            preferred_clearance=float(rospy.get_param("~preferred_clearance", 0.32)),
-        )
         self.ride_start_z = None
         self.ride_response = None
         self.ride_error = None
         self.progress_stamp = rospy.Time.now()
         self.progress_pose = None
         self.entry_retries = 0
-        self.entry_heading_bias = 0.0
-        self.entry_bias_anchor = None
         self.ride_thread = None
         self.ride_accepted_at = None
         self.search_offsets = (-0.60, -0.30, 0.0, 0.30, 0.60)
@@ -150,10 +131,6 @@ class ElevatorTransition:
         )
         rospy.Subscriber(
             "/simnav/world_pose_metric", PoseStamped, self._pose_callback, queue_size=10
-        )
-        rospy.Subscriber("/simnav/odom", Odometry, self._source_pose_callback, queue_size=10)
-        rospy.Subscriber(
-            "/navigation_map", OccupancyGrid, self._navigation_map_callback, queue_size=1
         )
         rospy.Subscriber("/scan_2d", LaserScan, self._scan_callback, queue_size=1)
         self.elevator_service = rospy.ServiceProxy("/call_elevator", CallElevator)
@@ -209,27 +186,6 @@ class ElevatorTransition:
             )
             self.last_pose_stamp = rospy.Time.now()
 
-    def _source_pose_callback(self, message):
-        with self.lock:
-            self.source_pose = (
-                float(message.pose.pose.position.x),
-                float(message.pose.pose.position.y),
-                self._yaw(message.pose.pose.orientation),
-                float(message.pose.pose.position.z),
-            )
-
-    def _navigation_map_callback(self, message):
-        with self.lock:
-            self.navigation_grid = GridView(
-                data=np.asarray(message.data, dtype=np.int16).reshape(
-                    message.info.height, message.info.width
-                ),
-                resolution=float(message.info.resolution),
-                origin_x=float(message.info.origin.position.x),
-                origin_y=float(message.info.origin.position.y),
-                frame_id=message.header.frame_id or "simnav_map",
-            )
-
     def _scan_callback(self, message):
         values = []
         left = []
@@ -259,10 +215,6 @@ class ElevatorTransition:
             self.state = state
             self.state_started = rospy.Time.now()
             self.travel_anchor = None
-            self.route = ()
-            self.route_index = 0
-            self.route_state = None
-            self.route_target = None
         rospy.loginfo("Elevator transition state -> %s", state)
         self._publish_status()
 
@@ -283,7 +235,7 @@ class ElevatorTransition:
         self._set_state("MISSION_FAULT")
         self.fault_pub.publish(String(data=json.dumps(self.fault, sort_keys=True)))
 
-    def _drive_to(self, pose, target, speed=None, blocked_arrival_tolerance=None):
+    def _drive_to(self, pose, target, speed=None):
         distance = planar_distance(pose, target)
         if distance <= self.target_tolerance:
             self._stop()
@@ -293,59 +245,10 @@ class ElevatorTransition:
         if abs(error) > self.heading_tolerance:
             self._publish_command(0.0, math.copysign(self.turn_speed, error))
         elif self.front_clearance < self.stop_distance:
-            if (
-                blocked_arrival_tolerance is not None
-                and distance <= float(blocked_arrival_tolerance)
-            ):
-                self._stop()
-                return True
             self._fail("OBSTACLE_WHILE_DRIVING_TO_{}".format(self.state))
         else:
             self._publish_command(speed if speed is not None else self.motion_speed, 0.8 * error)
         return False
-
-    def _drive_planned_to(
-        self, pose, target, speed=None, blocked_arrival_tolerance=None
-    ):
-        """Follow an A* route in the localization frame, with direct fallback."""
-        with self.lock:
-            grid = self.navigation_grid
-        target_key = (round(float(target[0]), 2), round(float(target[1]), 2))
-        if (
-            grid is not None
-            and (
-                self.route_state != self.state
-                or self.route_target != target_key
-                or not self.route
-            )
-        ):
-            path, _length, _clearance = self.route_planner.navigation_path(
-                grid, pose[:3], target
-            )
-            if path:
-                self.route = tuple(path)
-                self.route_index = min(1, len(self.route) - 1)
-                self.route_state = self.state
-                self.route_target = target_key
-        if self.route:
-            while (
-                self.route_index < len(self.route) - 1
-                and planar_distance(pose, self.route[self.route_index])
-                <= self.target_tolerance
-            ):
-                self.route_index += 1
-            waypoint = self.route[self.route_index]
-            final = self.route_index == len(self.route) - 1
-            reached = self._drive_to(
-                pose,
-                waypoint,
-                speed,
-                blocked_arrival_tolerance if final else None,
-            )
-            if reached and final:
-                return True
-            return False
-        return self._drive_to(pose, target, speed, blocked_arrival_tolerance)
 
     def _align(self, pose, yaw):
         error = normalize_angle(yaw - pose[2])
@@ -361,12 +264,6 @@ class ElevatorTransition:
         travelled = planar_distance(pose, self.travel_anchor)
         now = rospy.Time.now()
         if self.state == "ENTER_ELEVATOR":
-            if (
-                self.entry_bias_anchor is not None
-                and planar_distance(pose, self.entry_bias_anchor) >= 0.35
-            ):
-                self.entry_heading_bias = 0.0
-                self.entry_bias_anchor = None
             if self.progress_pose is None:
                 self.progress_pose = pose[:2]
                 self.progress_stamp = now
@@ -377,20 +274,14 @@ class ElevatorTransition:
                 if self.entry_retries >= 3:
                     self._fail("ELEVATOR_ENTRY_NO_PROGRESS")
                     return False
-                # Hold a small offset long enough to walk around a jamb.  ROS
-                # scan angles and angular.z are both positive to the left, so
-                # turn toward the side with more measured clearance first.
-                if math.isfinite(self.left_clearance) and math.isfinite(self.right_clearance):
-                    direction = 1.0 if self.left_clearance >= self.right_clearance else -1.0
-                else:
-                    direction = 1.0
-                if self.entry_retries % 2:
-                    direction *= -1.0
-                self.entry_heading_bias = direction * 0.24
-                self.entry_bias_anchor = pose[:2]
+                # A small heading bias clears a leg/threshold contact while
+                # keeping the selected opening as the forward direction.
+                bias = 0.16 if self.entry_retries % 2 == 0 else -0.16
                 self.entry_retries += 1
                 self.progress_stamp = now
                 self.progress_pose = pose[:2]
+                self._publish_command(0.0, bias)
+                return False
         if travelled >= distance:
             self._stop()
             return True
@@ -404,20 +295,14 @@ class ElevatorTransition:
                 return True
             self._fail("ELEVATOR_PATH_BLOCKED_AFTER_{:.2f}M".format(travelled))
             return False
-        desired_heading = self.elevator_heading
-        if self.state == "ENTER_ELEVATOR":
-            desired_heading = normalize_angle(desired_heading + self.entry_heading_bias)
-        error = normalize_angle(desired_heading - pose[2])
+        error = normalize_angle(self.elevator_heading - pose[2])
         if abs(error) > 0.20:
             self._publish_command(0.0, math.copysign(self.turn_speed, error))
         else:
             lateral_error = 0.0
             if self.state == "ENTER_ELEVATOR":
                 if math.isfinite(self.left_clearance) and math.isfinite(self.right_clearance):
-                    lateral_error = max(
-                        -0.18,
-                        min(0.18, 0.10 * (self.left_clearance - self.right_clearance)),
-                    )
+                    lateral_error = max(-0.18, min(0.18, 0.10 * (self.right_clearance - self.left_clearance)))
             self._publish_command(speed, max(-0.18, min(0.18, 0.8 * error + lateral_error)))
         return False
 
@@ -454,7 +339,6 @@ class ElevatorTransition:
     def _control(self, _event):
         with self.lock:
             state, pose, gate = self.state, self.pose, self.gate
-            source_pose, source_gate = self.source_pose, self.gate_source
             floor_complete = self.floor_complete
         if not self.enabled or self.two_floor_mission_complete or self.fault is not None:
             return
@@ -470,41 +354,25 @@ class ElevatorTransition:
             return
 
         if state == "RETURN_TO_GATE":
-            if source_pose is not None and source_gate is not None:
-                reached = self._drive_planned_to(
-                    source_pose,
-                    point_from_gate(source_gate, self.gate_staging_offset),
-                )
-            else:
-                reached = self._drive_to(
-                    pose, point_from_gate(gate, self.gate_staging_offset)
-                )
-            if reached:
+            target = point_from_gate(gate, self.gate_staging_offset)
+            if self._drive_to(pose, target):
                 self._set_state("ENTER_LOBBY")
         elif state == "ENTER_LOBBY":
-            # The passively mapped portal center may sit close to one jamb and
-            # is not guaranteed to be directly reachable from the corridor.
-            # Keep it as evidence, but approach the proven clear lobby scan
-            # point before choosing the crossing heading from live lidar.
-            if source_pose is not None and source_gate is not None:
-                reached = self._drive_planned_to(
-                    source_pose,
-                    point_from_gate(source_gate, self.lobby_search_offset),
-                    min(self.motion_speed, 0.30),
-                    self.lobby_blocked_arrival_tolerance,
-                )
-            else:
-                reached = self._drive_to(
-                    pose,
-                    point_from_gate(gate, self.lobby_search_offset),
-                    min(self.motion_speed, 0.30),
-                    self.lobby_blocked_arrival_tolerance,
-                )
-            if reached:
+            target = (
+                self.elevator_portal[:2]
+                if self.elevator_portal is not None
+                else point_from_gate(gate, self.lobby_search_offset)
+            )
+            if self._drive_to(pose, target, min(self.motion_speed, 0.30)):
                 self.search_index = 0
                 self.search_samples = []
                 self._set_state("SEARCH_ELEVATOR")
         elif state == "SEARCH_ELEVATOR":
+            if self.elevator_portal is not None:
+                self.elevator_heading = self.elevator_portal[2]
+                self._set_state("ALIGN_ELEVATOR")
+                self._publish_status()
+                return
             # The building topology fixes the elevator core on the right side
             # of the entrance corridor.  Scan a local angular fan and select
             # the deepest sensor-confirmed opening; no layout coordinates are used.
@@ -535,8 +403,6 @@ class ElevatorTransition:
                 self.progress_pose = pose[:2]
                 self.progress_stamp = rospy.Time.now()
                 self.entry_retries = 0
-                self.entry_heading_bias = 0.0
-                self.entry_bias_anchor = None
                 self._set_state("ENTER_ELEVATOR")
         elif state == "ENTER_ELEVATOR":
             if self._drive_distance(
@@ -578,40 +444,10 @@ class ElevatorTransition:
                 self._set_state("ESTABLISH_FLOOR_1_TOPOLOGY")
         elif state == "ESTABLISH_FLOOR_1_TOPOLOGY":
             # The generated floors are topologically aligned in x/y.  Reuse
-            # the observed floor-0 gate on floor 1, walk a short distance
-            # beyond it into the corridor with the same A* navigation frame,
-            # then give the unchanged single-floor explorer a clean context.
-            if source_pose is not None and source_gate is not None:
-                corridor_gate = source_gate
-                corridor_target = point_from_gate(
-                    corridor_gate, self.floor1_corridor_advance
-                )
-                reached = self._drive_planned_to(
-                    source_pose,
-                    corridor_target,
-                    min(self.motion_speed, 0.30),
-                )
-            else:
-                corridor_target = point_from_gate(gate, self.floor1_corridor_advance)
-                reached = self._drive_to(
-                    pose,
-                    corridor_target,
-                    min(self.motion_speed, 0.30),
-                )
-            if reached:
-                # The odometry frame is re-anchored by the elevator ride.
-                # ``gate`` is the floor-0 source-frame marker and cannot be
-                # reused directly for floor-1 room geometry.  Reconstruct a
-                # local gate from the post-exit pose and the known corridor
-                # advance so the explorer's topology coordinates stay in the
-                # current localization frame.
-                gate_yaw = float((self.gate_source or gate)[2])
-                local_gate = (
-                    float(pose[0]) - self.floor1_corridor_advance * math.cos(gate_yaw),
-                    float(pose[1]) - self.floor1_corridor_advance * math.sin(gate_yaw),
-                    gate_yaw,
-                )
-                self.floor1_gate = tuple(local_gate)
+            # the observed floor-0 lobby/corridor gate on floor 1, then give
+            # the single-floor explorer a clean floor-specific context.
+            if self._drive_to(pose, gate[:2], min(self.motion_speed, 0.30)):
+                self.floor1_gate = tuple(gate)
                 self.floor1_topology_isolated = True
                 self.transition_complete = True
                 self._stop()
@@ -622,7 +458,7 @@ class ElevatorTransition:
                 self.context_pub.publish(String(data=json.dumps({
                     "floor_index": self.target_floor,
                     "floor_z": pose[3],
-                    "gate_source": list(self.floor1_gate),
+                    "gate_source": list(self.gate_source or self.floor1_gate),
                     "gate_world": list(self.floor1_gate),
                 }, sort_keys=True)))
         elif state == "FLOOR_1_READY":
@@ -687,16 +523,6 @@ class ElevatorTransition:
                 if self.floor1_gate is not None else None,
                 "target_floor": self.target_floor,
                 "front_clearance": self.front_clearance,
-                "state_target_distance": (
-                    planar_distance(
-                        self.pose,
-                        point_from_gate(self.gate, self.lobby_search_offset),
-                    )
-                    if self.pose is not None
-                    and self.gate is not None
-                    and self.state == "ENTER_LOBBY"
-                    else None
-                ),
                 "gate": list(self.gate) if self.gate is not None else None,
                 "elevator_portal": list(self.elevator_portal)
                 if self.elevator_portal is not None else None,

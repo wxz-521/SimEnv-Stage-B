@@ -3,9 +3,6 @@
   <arg name="initial_forward_distance" default="14.5"/>
   <arg name="result_dir" default="/workspace/SimEnv/results"/>
   <arg name="room_combined_coverage_target" default="0.84"/>
-  <arg name="camera_coverage_target" default="0.85"/>
-  <arg name="combined_coverage_target" default="0.84"/>
-  <arg name="camera_weight" default="0.95"/>
   <arg name="motion_speed" default="0.60"/>
   <arg name="enable_elevator_transition" default="false"/>
   <arg name="elevator_transition_only" default="false"/>
@@ -65,7 +62,6 @@
     <param name="door_search_wait_cycles" value="3"/>
     <param name="door_search_front_limit" value="3.0"/>
     <param name="door_search_rear_limit" value="3.0"/>
-    <param name="door_lateral_opening_clearance" value="2.5"/>
     <!-- A temporally stable single doorway may be entered independently.
          Opposing doors are used only to finish both rooms at one station. -->
     <param name="minimum_room_stations" value="1"/>
@@ -92,12 +88,12 @@
 
     <!-- Completion is an AND gate; lidar cannot hide missing RGB-D view. -->
     <param name="laser_coverage_target" value="0.95"/>
-    <param name="camera_coverage_target" value="$(arg camera_coverage_target)"/>
-    <param name="combined_coverage_target" value="$(arg combined_coverage_target)"/>
+    <param name="camera_coverage_target" value="0.85"/>
+    <param name="combined_coverage_target" value="0.84"/>
     <!-- RGB-D is the task sensor; lidar remains the navigation/frontier
          assistant.  Use the linear 5% lidar + 95% camera room metric and give
          camera information gain 95% of the target-selection weight. -->
-    <param name="camera_weight" value="$(arg camera_weight)"/>
+    <param name="camera_weight" value="0.95"/>
     <param name="completion_stable_duration" value="3.0"/>
 
     <!-- Stable 0.3 m low clusters become mandatory camera-review targets. -->
