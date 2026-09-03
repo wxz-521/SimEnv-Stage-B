@@ -118,6 +118,43 @@ cleanup() {
   terminate_process_group "$NAV_PID"
   terminate_process_group "$AUTO_PID"
   terminate_process_group "$CORE_PID"
+  # roslaunch can re-parent children after a signal.  Remove only the
+  # SimEnv-owned processes that this runner is allowed to start, then wait for
+  # both resource ports before allowing another run.
+  for pattern in \
+    'multi_floor_gazeboSim.launch' 'gzserver.*competition_scene.world' \
+    'stage_b_localization.launch' 'stage_b_behavior.launch' \
+    'coverage_explorer_node.py' 'danger_detector_node.py' \
+    'elevator_transition_node.py' 'fastlio_mapping' 'lio_health_monitor' \
+    'localization_bridge' 'junior_ctrl' 'monitor_stage_b_coverage.py' \
+    'rosmaster --core.*-p '$ROS_PORT 'rosout'; do
+    while read -r pid _; do
+      [ -n "$pid" ] || continue
+      [ "$pid" = "$$" ] && continue
+      kill -TERM "$pid" 2>/dev/null || true
+    done < <(pgrep -f "$pattern" -a 2>/dev/null || true)
+  done
+  sleep 1
+  for pattern in \
+    'multi_floor_gazeboSim.launch' 'gzserver.*competition_scene.world' \
+    'stage_b_localization.launch' 'stage_b_behavior.launch' \
+    'coverage_explorer_node.py' 'danger_detector_node.py' \
+    'elevator_transition_node.py' 'fastlio_mapping' 'lio_health_monitor' \
+    'localization_bridge' 'junior_ctrl' 'monitor_stage_b_coverage.py' \
+    'rosmaster --core.*-p '$ROS_PORT 'rosout'; do
+    while read -r pid _; do
+      [ -n "$pid" ] || continue
+      [ "$pid" = "$$" ] && continue
+      kill -KILL "$pid" 2>/dev/null || true
+    done < <(pgrep -f "$pattern" -a 2>/dev/null || true)
+  done
+  for _ in $(seq 1 30); do
+    if ! (command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | rg -q ":($ROS_PORT|$GAZEBO_PORT)\\b"); then
+      break
+    fi
+    sleep 0.1
+  done
+  rm -f "$LOCK_FILE"
 }
 trap cleanup EXIT INT TERM
 
