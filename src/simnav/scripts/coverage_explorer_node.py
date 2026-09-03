@@ -1147,9 +1147,14 @@ class CoverageExplorer:
                 1.0, 0.5 * float(portal.width) + 0.45
             )
             side_ok = (
-                lateral > self.planner.corridor_half_width + 0.30
+                # The shallowest valid portal staging target is 0.20 m into
+                # the room.  Requiring another 0.30 m here can leave a robot
+                # that reached that collision-checked target permanently in
+                # APPROACHING.  Crossing 0.20 m beyond the corridor boundary
+                # is still unambiguous room-entry evidence.
+                lateral > self.planner.corridor_half_width + 0.20
                 if portal.side == "L"
-                else lateral < -self.planner.corridor_half_width - 0.30
+                else lateral < -self.planner.corridor_half_width - 0.20
             )
             entered = longitudinal_ok and side_ok
         if entered:
