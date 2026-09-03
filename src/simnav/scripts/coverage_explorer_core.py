@@ -2086,8 +2086,8 @@ class TaskCoveragePlanner:
 def detect_sphere_like_clusters(
     points,
     robot_z: float,
-    minimum_points: int = 6,
-    cluster_radius: float = 0.12,
+    minimum_points: int = 8,
+    cluster_radius: float = 0.09,
 ) -> Tuple[Tuple[float, float, float], ...]:
     """Extract small, low, roughly isotropic point clusters as review hints."""
     values = np.asarray(points, dtype=np.float64).reshape((-1, 3))
