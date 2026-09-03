@@ -470,25 +470,37 @@ class ElevatorTransition:
             return
 
         if state == "RETURN_TO_GATE":
-            route_pose = source_pose if source_pose is not None and source_gate is not None else pose
-            route_gate = source_gate if source_pose is not None and source_gate is not None else gate
-            target = point_from_gate(route_gate, self.gate_staging_offset)
-            if self._drive_planned_to(route_pose, target):
+            if source_pose is not None and source_gate is not None:
+                reached = self._drive_planned_to(
+                    source_pose,
+                    point_from_gate(source_gate, self.gate_staging_offset),
+                )
+            else:
+                reached = self._drive_to(
+                    pose, point_from_gate(gate, self.gate_staging_offset)
+                )
+            if reached:
                 self._set_state("ENTER_LOBBY")
         elif state == "ENTER_LOBBY":
             # The passively mapped portal center may sit close to one jamb and
             # is not guaranteed to be directly reachable from the corridor.
             # Keep it as evidence, but approach the proven clear lobby scan
             # point before choosing the crossing heading from live lidar.
-            route_pose = source_pose if source_pose is not None and source_gate is not None else pose
-            route_gate = source_gate if source_pose is not None and source_gate is not None else gate
-            target = point_from_gate(route_gate, self.lobby_search_offset)
-            if self._drive_planned_to(
-                route_pose,
-                target,
-                min(self.motion_speed, 0.30),
-                self.lobby_blocked_arrival_tolerance,
-            ):
+            if source_pose is not None and source_gate is not None:
+                reached = self._drive_planned_to(
+                    source_pose,
+                    point_from_gate(source_gate, self.lobby_search_offset),
+                    min(self.motion_speed, 0.30),
+                    self.lobby_blocked_arrival_tolerance,
+                )
+            else:
+                reached = self._drive_to(
+                    pose,
+                    point_from_gate(gate, self.lobby_search_offset),
+                    min(self.motion_speed, 0.30),
+                    self.lobby_blocked_arrival_tolerance,
+                )
+            if reached:
                 self.search_index = 0
                 self.search_samples = []
                 self._set_state("SEARCH_ELEVATOR")
