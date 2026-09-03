@@ -7,6 +7,9 @@ SIM_TIMEOUT="${2:-600}"
 OUTPUT_ROOT="${3:-$WORKSPACE_DIR/logs/stage_b_matrix}"
 RUN_MODE="${4:-coverage}"
 ROOM_COMBINED_COVERAGE_TARGET="${STAGE_B_ROOM_COMBINED_COVERAGE_TARGET:-0.84}"
+CAMERA_COVERAGE_TARGET="${STAGE_B_CAMERA_COVERAGE_TARGET:-0.85}"
+COMBINED_COVERAGE_TARGET="${STAGE_B_COMBINED_COVERAGE_TARGET:-0.84}"
+CAMERA_WEIGHT="${STAGE_B_CAMERA_WEIGHT:-0.95}"
 MOTION_SPEED="${STAGE_B_MOTION_SPEED:-0.60}"
 TRANSITION_ONLY="${STAGE_B_TRANSITION_ONLY:-0}"
 GATE_OVERRIDE="${STAGE_B_GATE_OVERRIDE:-}"
@@ -129,6 +132,9 @@ echo "Stage B resource guard: ROS_PORT=$ROS_PORT GAZEBO_PORT=$GAZEBO_PORT CPU_LI
 echo "Stage B locomotion policy: $STAGE_B_POLICY_PATH" >> "$RUN_DIR/resource_guard.log"
 echo "Stage B plane policy: $STAGE_B_PLANE_POLICY_PATH" >> "$RUN_DIR/resource_guard.log"
 echo "Stage B room combined coverage target: $ROOM_COMBINED_COVERAGE_TARGET" >> "$RUN_DIR/resource_guard.log"
+echo "Stage B camera coverage target: $CAMERA_COVERAGE_TARGET" >> "$RUN_DIR/resource_guard.log"
+echo "Stage B combined coverage target: $COMBINED_COVERAGE_TARGET" >> "$RUN_DIR/resource_guard.log"
+echo "Stage B camera weight: $CAMERA_WEIGHT" >> "$RUN_DIR/resource_guard.log"
 echo "Stage B exploration motion speed: $MOTION_SPEED" >> "$RUN_DIR/resource_guard.log"
 
 "${RUN_PREFIX[@]}" setsid roscore -p "$ROS_PORT" > "$RUN_DIR/roscore.log" 2>&1 &
@@ -241,6 +247,9 @@ fi
 "${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_behavior.launch \
   result_dir:="$RESULTS_DIR" \
   room_combined_coverage_target:="$ROOM_COMBINED_COVERAGE_TARGET" \
+  camera_coverage_target:="$CAMERA_COVERAGE_TARGET" \
+  combined_coverage_target:="$COMBINED_COVERAGE_TARGET" \
+  camera_weight:="$CAMERA_WEIGHT" \
   motion_speed:="$MOTION_SPEED" \
   enable_elevator_transition:="$([ "$RUN_MODE" = "full" ] || [ "$RUN_MODE" = "two_floor" ] || [ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
   elevator_transition_only:="$([ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
