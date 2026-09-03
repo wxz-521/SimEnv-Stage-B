@@ -13,6 +13,7 @@ import rospy
 import tf.transformations as transformations
 from building_generator_interfaces.srv import CallElevator
 from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool
@@ -29,6 +30,7 @@ from elevator_transition_core import (
     point_from_gate,
     target_heading,
 )
+from coverage_explorer_core import GridView, TaskCoveragePlanner
 
 
 class ElevatorTransition:
@@ -68,6 +70,8 @@ class ElevatorTransition:
 
         self.state = self.WAITING
         self.pose = None
+        self.source_pose = None
+        self.navigation_grid = None
         self.last_pose_stamp = rospy.Time(0)
         self.gate = None
         self.gate_source = None
@@ -86,6 +90,16 @@ class ElevatorTransition:
         self.two_floor_mission_complete = False
         self.state_started = rospy.Time.now()
         self.travel_anchor = None
+        self.route = ()
+        self.route_index = 0
+        self.route_state = None
+        self.route_target = None
+        self.route_planner = TaskCoveragePlanner(
+            robot_radius=float(rospy.get_param("~robot_radius", 0.38)),
+            safety_margin=float(rospy.get_param("~safety_margin", 0.04)),
+            navigation_clearance=float(rospy.get_param("~navigation_clearance", 0.20)),
+            preferred_clearance=float(rospy.get_param("~preferred_clearance", 0.32)),
+        )
         self.ride_start_z = None
         self.ride_response = None
         self.ride_error = None
@@ -134,6 +148,10 @@ class ElevatorTransition:
         )
         rospy.Subscriber(
             "/simnav/world_pose_metric", PoseStamped, self._pose_callback, queue_size=10
+        )
+        rospy.Subscriber("/simnav/odom", Odometry, self._source_pose_callback, queue_size=10)
+        rospy.Subscriber(
+            "/navigation_map", OccupancyGrid, self._navigation_map_callback, queue_size=1
         )
         rospy.Subscriber("/scan_2d", LaserScan, self._scan_callback, queue_size=1)
         self.elevator_service = rospy.ServiceProxy("/call_elevator", CallElevator)
@@ -189,6 +207,27 @@ class ElevatorTransition:
             )
             self.last_pose_stamp = rospy.Time.now()
 
+    def _source_pose_callback(self, message):
+        with self.lock:
+            self.source_pose = (
+                float(message.pose.pose.position.x),
+                float(message.pose.pose.position.y),
+                self._yaw(message.pose.pose.orientation),
+                float(message.pose.pose.position.z),
+            )
+
+    def _navigation_map_callback(self, message):
+        with self.lock:
+            self.navigation_grid = GridView(
+                data=np.asarray(message.data, dtype=np.int16).reshape(
+                    message.info.height, message.info.width
+                ),
+                resolution=float(message.info.resolution),
+                origin_x=float(message.info.origin.position.x),
+                origin_y=float(message.info.origin.position.y),
+                frame_id=message.header.frame_id or "simnav_map",
+            )
+
     def _scan_callback(self, message):
         values = []
         left = []
@@ -218,6 +257,10 @@ class ElevatorTransition:
             self.state = state
             self.state_started = rospy.Time.now()
             self.travel_anchor = None
+            self.route = ()
+            self.route_index = 0
+            self.route_state = None
+            self.route_target = None
         rospy.loginfo("Elevator transition state -> %s", state)
         self._publish_status()
 
@@ -258,6 +301,49 @@ class ElevatorTransition:
         else:
             self._publish_command(speed if speed is not None else self.motion_speed, 0.8 * error)
         return False
+
+    def _drive_planned_to(
+        self, pose, target, speed=None, blocked_arrival_tolerance=None
+    ):
+        """Follow an A* route in the localization frame, with direct fallback."""
+        with self.lock:
+            grid = self.navigation_grid
+        target_key = (round(float(target[0]), 2), round(float(target[1]), 2))
+        if (
+            grid is not None
+            and (
+                self.route_state != self.state
+                or self.route_target != target_key
+                or not self.route
+            )
+        ):
+            path, _length, _clearance = self.route_planner.navigation_path(
+                grid, pose[:3], target
+            )
+            if path:
+                self.route = tuple(path)
+                self.route_index = min(1, len(self.route) - 1)
+                self.route_state = self.state
+                self.route_target = target_key
+        if self.route:
+            while (
+                self.route_index < len(self.route) - 1
+                and planar_distance(pose, self.route[self.route_index])
+                <= self.target_tolerance
+            ):
+                self.route_index += 1
+            waypoint = self.route[self.route_index]
+            final = self.route_index == len(self.route) - 1
+            reached = self._drive_to(
+                pose,
+                waypoint,
+                speed,
+                blocked_arrival_tolerance if final else None,
+            )
+            if reached and final:
+                return True
+            return False
+        return self._drive_to(pose, target, speed, blocked_arrival_tolerance)
 
     def _align(self, pose, yaw):
         error = normalize_angle(yaw - pose[2])
@@ -348,6 +434,7 @@ class ElevatorTransition:
     def _control(self, _event):
         with self.lock:
             state, pose, gate = self.state, self.pose, self.gate
+            source_pose, source_gate = self.source_pose, self.gate_source
             floor_complete = self.floor_complete
         if not self.enabled or self.two_floor_mission_complete or self.fault is not None:
             return
@@ -363,17 +450,21 @@ class ElevatorTransition:
             return
 
         if state == "RETURN_TO_GATE":
-            target = point_from_gate(gate, self.gate_staging_offset)
-            if self._drive_to(pose, target):
+            route_pose = source_pose if source_pose is not None and source_gate is not None else pose
+            route_gate = source_gate if source_pose is not None and source_gate is not None else gate
+            target = point_from_gate(route_gate, self.gate_staging_offset)
+            if self._drive_planned_to(route_pose, target):
                 self._set_state("ENTER_LOBBY")
         elif state == "ENTER_LOBBY":
             # The passively mapped portal center may sit close to one jamb and
             # is not guaranteed to be directly reachable from the corridor.
             # Keep it as evidence, but approach the proven clear lobby scan
             # point before choosing the crossing heading from live lidar.
-            target = point_from_gate(gate, self.lobby_search_offset)
-            if self._drive_to(
-                pose,
+            route_pose = source_pose if source_pose is not None and source_gate is not None else pose
+            route_gate = source_gate if source_pose is not None and source_gate is not None else gate
+            target = point_from_gate(route_gate, self.lobby_search_offset)
+            if self._drive_planned_to(
+                route_pose,
                 target,
                 min(self.motion_speed, 0.30),
                 self.lobby_blocked_arrival_tolerance,
