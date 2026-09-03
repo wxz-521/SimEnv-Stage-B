@@ -61,6 +61,9 @@ class ElevatorTransition:
         self.turn_speed = float(rospy.get_param("~turn_speed", 0.45))
         self.stop_distance = float(rospy.get_param("~stop_distance", 0.42))
         self.target_tolerance = float(rospy.get_param("~target_tolerance", 0.35))
+        self.lobby_blocked_arrival_tolerance = float(
+            rospy.get_param("~lobby_blocked_arrival_tolerance", 0.85)
+        )
         self.heading_tolerance = float(rospy.get_param("~heading_tolerance", 0.12))
 
         self.state = self.WAITING
@@ -235,7 +238,7 @@ class ElevatorTransition:
         self._set_state("MISSION_FAULT")
         self.fault_pub.publish(String(data=json.dumps(self.fault, sort_keys=True)))
 
-    def _drive_to(self, pose, target, speed=None):
+    def _drive_to(self, pose, target, speed=None, blocked_arrival_tolerance=None):
         distance = planar_distance(pose, target)
         if distance <= self.target_tolerance:
             self._stop()
@@ -245,6 +248,12 @@ class ElevatorTransition:
         if abs(error) > self.heading_tolerance:
             self._publish_command(0.0, math.copysign(self.turn_speed, error))
         elif self.front_clearance < self.stop_distance:
+            if (
+                blocked_arrival_tolerance is not None
+                and distance <= float(blocked_arrival_tolerance)
+            ):
+                self._stop()
+                return True
             self._fail("OBSTACLE_WHILE_DRIVING_TO_{}".format(self.state))
         else:
             self._publish_command(speed if speed is not None else self.motion_speed, 0.8 * error)
@@ -363,7 +372,12 @@ class ElevatorTransition:
             # Keep it as evidence, but approach the proven clear lobby scan
             # point before choosing the crossing heading from live lidar.
             target = point_from_gate(gate, self.lobby_search_offset)
-            if self._drive_to(pose, target, min(self.motion_speed, 0.30)):
+            if self._drive_to(
+                pose,
+                target,
+                min(self.motion_speed, 0.30),
+                self.lobby_blocked_arrival_tolerance,
+            ):
                 self.search_index = 0
                 self.search_samples = []
                 self._set_state("SEARCH_ELEVATOR")
@@ -518,6 +532,16 @@ class ElevatorTransition:
                 if self.floor1_gate is not None else None,
                 "target_floor": self.target_floor,
                 "front_clearance": self.front_clearance,
+                "state_target_distance": (
+                    planar_distance(
+                        self.pose,
+                        point_from_gate(self.gate, self.lobby_search_offset),
+                    )
+                    if self.pose is not None
+                    and self.gate is not None
+                    and self.state == "ENTER_LOBBY"
+                    else None
+                ),
                 "gate": list(self.gate) if self.gate is not None else None,
                 "elevator_portal": list(self.elevator_portal)
                 if self.elevator_portal is not None else None,
