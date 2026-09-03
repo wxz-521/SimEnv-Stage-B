@@ -65,6 +65,7 @@
     <param name="door_search_wait_cycles" value="3"/>
     <param name="door_search_front_limit" value="3.0"/>
     <param name="door_search_rear_limit" value="3.0"/>
+    <param name="door_lateral_opening_clearance" value="2.5"/>
     <!-- A temporally stable single doorway may be entered independently.
          Opposing doors are used only to finish both rooms at one station. -->
     <param name="minimum_room_stations" value="1"/>

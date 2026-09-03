@@ -29,6 +29,7 @@ if not sys.path or sys.path[0] != SCRIPT_DIRECTORY:
 from coverage_explorer_core import (
     FrontierTarget,
     GridView,
+    RoomPortal,
     TaskCoveragePlanner,
     corrected_portal_heading,
     coverage_classification,
@@ -256,6 +257,9 @@ class CoverageExplorer:
         self.door_search_travel = 0.0
         self.door_search_idle_cycles = 0
         self.door_search_phase = "FRONT"
+        self.door_lateral_opening_clearance = max(
+            1.5, float(rospy.get_param("~door_lateral_opening_clearance", 2.5))
+        )
         self.room_scope_announced = None
         self.portal_evidence = {}
         self.portal_last_seen = {}
@@ -1307,7 +1311,46 @@ class CoverageExplorer:
             if phase == "REAR"
             else self.door_search_front_limit
         )
-        if self.door_search_active or self.door_search_travel >= limit - 1e-6:
+        if self.door_search_active:
+            return False
+        if self.door_search_travel >= limit - 1e-6:
+            # A sparse occupancy map can fill an open doorway with an
+            # unobserved wall strip.  At the end of the bounded front search,
+            # accept a station only when live lidar independently confirms a
+            # deep opening on both sides.  This cannot promote the one-sided
+            # lobby/elevator opening and leaves normal map-derived portals as
+            # the primary mechanism.
+            if (
+                phase == "FRONT"
+                and 2.0 <= float(along) <= self.planner.front_station_search_limit
+                and self.left_clearance >= self.door_lateral_opening_clearance
+                and self.right_clearance >= self.door_lateral_opening_clearance
+            ):
+                stable_bin = int(round(float(along) / 0.5))
+                for side, sign in (("L", 1.0), ("R", -1.0)):
+                    topology_id = "{}_{}_{}".format(
+                        self.floor_prefix, side, stable_bin
+                    )
+                    portal = RoomPortal(
+                        topology_id=topology_id,
+                        side=side,
+                        along=float(along),
+                        lateral=sign * self.planner.corridor_half_width,
+                        width=0.80,
+                    )
+                    self.topology_portals[topology_id] = portal
+                    self.portal_evidence[topology_id] = self.portal_confirm_cycles
+                    self.portal_last_seen[topology_id] = rospy.Time.now().to_sec()
+                self.topology_region = "FRONT_DOOR_LIDAR_FALLBACK"
+                self.last_plan_time = rospy.Time(0)
+                rospy.logwarn(
+                    "Map doorway missing after bounded search; accepted bilateral "
+                    "lidar station at %.2f m (left=%.2f right=%.2f)",
+                    along,
+                    self.left_clearance,
+                    self.right_clearance,
+                )
+                return True
             return False
         self.door_search_idle_cycles += 1
         if self.door_search_idle_cycles < self.door_search_wait_cycles:
