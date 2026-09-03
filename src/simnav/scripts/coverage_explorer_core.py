@@ -1663,6 +1663,38 @@ class TaskCoveragePlanner:
                 assignment_portals,
                 str(topology_lock),
             )
+            # A freshly isolated upper floor can contain a one-cell lateral
+            # offset between the detected jambs and the first occupancy
+            # update.  Keep the normal Voronoi room mask as the default, but
+            # recover a confirmed room locally when that mask has no overlap
+            # with the task cells.  The fallback remains bounded to this
+            # portal's side and +/- 7.5 m longitudinal room band.
+            if (
+                not np.any(room_region & task_mask)
+                and np.any(task_mask)
+                and assignment_portals
+            ):
+                locked_portal = assignment_portals[0]
+                rows, columns = np.indices(data.shape, dtype=np.float64)
+                x = grid.origin_x + (columns + 0.5) * grid.resolution
+                y = grid.origin_y + (rows + 0.5) * grid.resolution
+                dx = x - float(gate_center[0])
+                dy = y - float(gate_center[1])
+                cosine, sine = math.cos(float(forward_yaw)), math.sin(float(forward_yaw))
+                along = dx * cosine + dy * sine
+                lateral = -dx * sine + dy * cosine
+                side_ok = (
+                    lateral >= float(corridor_half_width) + 0.05
+                    if locked_portal.side == "L"
+                    else lateral <= -float(corridor_half_width) - 0.05
+                )
+                relaxed = (
+                    (along >= max(0.0, float(locked_portal.along) - 7.5))
+                    & (along <= min(float(extent.forward_limit), float(locked_portal.along) + 7.5))
+                    & (np.abs(lateral) <= float(self.lateral_half_width))
+                    & side_ok
+                )
+                room_region = relaxed
             room_eligible = room_region & eligible
             diagnostics.update(
                 {
