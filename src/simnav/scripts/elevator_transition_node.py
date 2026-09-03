@@ -599,7 +599,19 @@ class ElevatorTransition:
                     min(self.motion_speed, 0.30),
                 )
             if reached:
-                self.floor1_gate = tuple(gate)
+                # The odometry frame is re-anchored by the elevator ride.
+                # ``gate`` is the floor-0 source-frame marker and cannot be
+                # reused directly for floor-1 room geometry.  Reconstruct a
+                # local gate from the post-exit pose and the known corridor
+                # advance so the explorer's topology coordinates stay in the
+                # current localization frame.
+                gate_yaw = float((self.gate_source or gate)[2])
+                local_gate = (
+                    float(pose[0]) - self.floor1_corridor_advance * math.cos(gate_yaw),
+                    float(pose[1]) - self.floor1_corridor_advance * math.sin(gate_yaw),
+                    gate_yaw,
+                )
+                self.floor1_gate = tuple(local_gate)
                 self.floor1_topology_isolated = True
                 self.transition_complete = True
                 self._stop()
@@ -610,7 +622,7 @@ class ElevatorTransition:
                 self.context_pub.publish(String(data=json.dumps({
                     "floor_index": self.target_floor,
                     "floor_z": pose[3],
-                    "gate_source": list(self.gate_source or self.floor1_gate),
+                    "gate_source": list(self.floor1_gate),
                     "gate_world": list(self.floor1_gate),
                 }, sort_keys=True)))
         elif state == "FLOOR_1_READY":
