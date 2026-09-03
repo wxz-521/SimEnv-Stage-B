@@ -581,14 +581,18 @@ class ElevatorTransition:
             # the observed floor-0 gate on floor 1, walk a short distance
             # beyond it into the corridor with the same A* navigation frame,
             # then give the unchanged single-floor explorer a clean context.
-            corridor_target = point_from_gate(gate, self.floor1_corridor_advance)
             if source_pose is not None and source_gate is not None:
+                corridor_gate = source_gate
+                corridor_target = point_from_gate(
+                    corridor_gate, self.floor1_corridor_advance
+                )
                 reached = self._drive_planned_to(
                     source_pose,
                     corridor_target,
                     min(self.motion_speed, 0.30),
                 )
             else:
+                corridor_target = point_from_gate(gate, self.floor1_corridor_advance)
                 reached = self._drive_to(
                     pose,
                     corridor_target,
