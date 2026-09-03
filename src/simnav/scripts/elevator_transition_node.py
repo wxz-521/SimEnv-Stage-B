@@ -106,6 +106,8 @@ class ElevatorTransition:
         self.progress_stamp = rospy.Time.now()
         self.progress_pose = None
         self.entry_retries = 0
+        self.entry_heading_bias = 0.0
+        self.entry_bias_anchor = None
         self.ride_thread = None
         self.ride_accepted_at = None
         self.search_offsets = (-0.60, -0.30, 0.0, 0.30, 0.60)
@@ -359,6 +361,12 @@ class ElevatorTransition:
         travelled = planar_distance(pose, self.travel_anchor)
         now = rospy.Time.now()
         if self.state == "ENTER_ELEVATOR":
+            if (
+                self.entry_bias_anchor is not None
+                and planar_distance(pose, self.entry_bias_anchor) >= 0.35
+            ):
+                self.entry_heading_bias = 0.0
+                self.entry_bias_anchor = None
             if self.progress_pose is None:
                 self.progress_pose = pose[:2]
                 self.progress_stamp = now
@@ -369,14 +377,20 @@ class ElevatorTransition:
                 if self.entry_retries >= 3:
                     self._fail("ELEVATOR_ENTRY_NO_PROGRESS")
                     return False
-                # A small heading bias clears a leg/threshold contact while
-                # keeping the selected opening as the forward direction.
-                bias = 0.16 if self.entry_retries % 2 == 0 else -0.16
+                # Hold a small offset long enough to walk around a jamb.  ROS
+                # scan angles and angular.z are both positive to the left, so
+                # turn toward the side with more measured clearance first.
+                if math.isfinite(self.left_clearance) and math.isfinite(self.right_clearance):
+                    direction = 1.0 if self.left_clearance >= self.right_clearance else -1.0
+                else:
+                    direction = 1.0
+                if self.entry_retries % 2:
+                    direction *= -1.0
+                self.entry_heading_bias = direction * 0.24
+                self.entry_bias_anchor = pose[:2]
                 self.entry_retries += 1
                 self.progress_stamp = now
                 self.progress_pose = pose[:2]
-                self._publish_command(0.0, bias)
-                return False
         if travelled >= distance:
             self._stop()
             return True
@@ -390,14 +404,20 @@ class ElevatorTransition:
                 return True
             self._fail("ELEVATOR_PATH_BLOCKED_AFTER_{:.2f}M".format(travelled))
             return False
-        error = normalize_angle(self.elevator_heading - pose[2])
+        desired_heading = self.elevator_heading
+        if self.state == "ENTER_ELEVATOR":
+            desired_heading = normalize_angle(desired_heading + self.entry_heading_bias)
+        error = normalize_angle(desired_heading - pose[2])
         if abs(error) > 0.20:
             self._publish_command(0.0, math.copysign(self.turn_speed, error))
         else:
             lateral_error = 0.0
             if self.state == "ENTER_ELEVATOR":
                 if math.isfinite(self.left_clearance) and math.isfinite(self.right_clearance):
-                    lateral_error = max(-0.18, min(0.18, 0.10 * (self.right_clearance - self.left_clearance)))
+                    lateral_error = max(
+                        -0.18,
+                        min(0.18, 0.10 * (self.left_clearance - self.right_clearance)),
+                    )
             self._publish_command(speed, max(-0.18, min(0.18, 0.8 * error + lateral_error)))
         return False
 
@@ -503,6 +523,8 @@ class ElevatorTransition:
                 self.progress_pose = pose[:2]
                 self.progress_stamp = rospy.Time.now()
                 self.entry_retries = 0
+                self.entry_heading_bias = 0.0
+                self.entry_bias_anchor = None
                 self._set_state("ENTER_ELEVATOR")
         elif state == "ENTER_ELEVATOR":
             if self._drive_distance(
