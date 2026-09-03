@@ -578,9 +578,23 @@ class ElevatorTransition:
                 self._set_state("ESTABLISH_FLOOR_1_TOPOLOGY")
         elif state == "ESTABLISH_FLOOR_1_TOPOLOGY":
             # The generated floors are topologically aligned in x/y.  Reuse
-            # the observed floor-0 lobby/corridor gate on floor 1, then give
-            # the single-floor explorer a clean floor-specific context.
-            if self._drive_to(pose, gate[:2], min(self.motion_speed, 0.30)):
+            # the observed floor-0 gate on floor 1, walk a short distance
+            # beyond it into the corridor with the same A* navigation frame,
+            # then give the unchanged single-floor explorer a clean context.
+            corridor_target = point_from_gate(gate, self.floor1_corridor_advance)
+            if source_pose is not None and source_gate is not None:
+                reached = self._drive_planned_to(
+                    source_pose,
+                    corridor_target,
+                    min(self.motion_speed, 0.30),
+                )
+            else:
+                reached = self._drive_to(
+                    pose,
+                    corridor_target,
+                    min(self.motion_speed, 0.30),
+                )
+            if reached:
                 self.floor1_gate = tuple(gate)
                 self.floor1_topology_isolated = True
                 self.transition_complete = True
