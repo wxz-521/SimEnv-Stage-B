@@ -491,8 +491,8 @@ def detect_room_portals(
     minimum_along: float = 0.0,
     portal_prefix: str = "ROOM",
     max_portal_width: float = 2.4,
-    minimum_jamb_support: float = 0.55,
-    passage_depth: float = 0.70,
+    minimum_jamb_support: float = 0.0,
+    passage_depth: float = 0.45,
 ) -> Tuple[RoomPortal, ...]:
     """Find persistent side openings from the occupancy map.
 
@@ -572,7 +572,7 @@ def detect_room_portals(
                 right_expected = range(end + 1, end + 1 + support_bins)
                 left_ratio = sum(index in wall_indices for index in left_expected) / float(support_bins)
                 right_ratio = sum(index in wall_indices for index in right_expected) / float(support_bins)
-                if min(left_ratio, right_ratio) < jamb_support:
+                if jamb_support > 0.0 and min(left_ratio, right_ratio) < jamb_support:
                     continue
                 # Require that the gap opens into observed free room space.
                 # This rejects a short same-width discontinuity whose far side
@@ -841,7 +841,7 @@ class TaskCoveragePlanner:
         robot_radius: float = 0.38,
         safety_margin: float = 0.04,
         frontier_cluster_radius: float = 0.45,
-        revisit_radius: float = 0.70,
+        revisit_radius: float = 0.35,
         information_radius: float = 2.5,
         camera_weight: float = 0.65,
         back_extension: float = 3.6,
@@ -1250,7 +1250,6 @@ class TaskCoveragePlanner:
 
     def _clusters(self, mask, grid):
         pending = set(zip(*np.nonzero(mask)))
-        radius = max(1, int(math.ceil(self.frontier_cluster_radius / grid.resolution)))
         clusters = []
         while pending:
             seed = pending.pop()
@@ -1258,13 +1257,10 @@ class TaskCoveragePlanner:
             queue = deque([seed])
             while queue:
                 row, column = queue.popleft()
-                neighbours = []
-                for next_row in range(row - radius, row + radius + 1):
-                    for next_column in range(column - radius, column + radius + 1):
-                        item = (next_row, next_column)
-                        if item in pending:
-                            neighbours.append(item)
-                for item in neighbours:
+                for row_offset, column_offset in self.DIRECTIONS:
+                    item = (row + row_offset, column + column_offset)
+                    if item not in pending:
+                        continue
                     pending.remove(item)
                     cluster.append(item)
                     queue.append(item)
@@ -1706,8 +1702,9 @@ class TaskCoveragePlanner:
             )
 
         def not_visited(cell):
-            point = grid.cell_center(*cell)
-            return not any(math.hypot(point[0] - old[0], point[1] - old[1]) < self.revisit_radius for old in visited)
+            # Historical viewpoints are not a hard exclusion.  A nearby
+            # stance may expose new camera cells after map/camera fusion.
+            return True
 
         # Camera-unseen reachable viewpoints are preferred until the camera
         # threshold is met.  Bucket sampling prevents a dense carpet of nearly
@@ -1874,8 +1871,8 @@ class TaskCoveragePlanner:
             key=lambda item: (
                 priority[item.kind],
                 portal_order.get(item.topology_id, len(portal_order)),
-                item.path_length,
                 -item.combined_gain,
+                item.path_length,
                 -item.min_clearance,
             )
         )
@@ -1955,6 +1952,20 @@ class TaskCoveragePlanner:
             targets = locked
         elif completed:
             targets = [item for item in targets if item.topology_id not in completed]
+        # Prefer a nearby viewpoint when it carries nearly as much new
+        # information as the best global option.  This is a soft locality
+        # preference, not a blacklist: a clearly better distant frontier can
+        # still win and no region is permanently excluded.
+        if targets:
+            near_targets = [item for item in targets if item.path_length <= 4.0]
+            if near_targets:
+                best_gain = max(float(item.combined_gain) for item in targets)
+                near_gain = max(float(item.combined_gain) for item in near_targets)
+                if near_gain >= 0.60 * best_gain:
+                    targets = near_targets
+                    diagnostics["near_gain_preferred"] = True
+                else:
+                    diagnostics["near_gain_preferred"] = False
         # Candidate discovery/ranking remains nearest-frontier based.  Only
         # the selected executable route is replaced with orientation-aware
         # A* plus a collision-checked line-of-sight shortcut.
@@ -2007,6 +2018,34 @@ class TaskCoveragePlanner:
             else:
                 diagnostics["candidate_reject_counts"]["path_unreachable"] += len(targets)
                 targets = []
+        # A newly handed-off floor can have a confirmed doorway before the
+        # camera/task mask has populated the room interior.  Give that door a
+        # single entry waypoint so the normal room camera-frontier planner can
+        # take over after the robot crosses the threshold.
+        if not targets and assignment_portals and topology_lock is None:
+            portal = sorted(assignment_portals, key=lambda item: item.along)[0]
+            side_sign = 1.0 if portal.side == "L" else -1.0
+            entry = self._portal_waypoint(
+                gate_center,
+                forward_yaw,
+                portal.along,
+                portal.lateral + side_sign * 0.75,
+            )
+            targets = [
+                FrontierTarget(
+                    kind="CAMERA_FRONTIER",
+                    target=entry,
+                    path=(entry,),
+                    path_length=0.0,
+                    laser_gain=0.0,
+                    camera_gain=0.0,
+                    combined_gain=0.0,
+                    min_clearance=self.preferred_clearance,
+                    look_at=entry,
+                    topology_id=portal.topology_id,
+                )
+            ]
+            diagnostics["last_reject_reason"] = "ROOM_ENTRY_FALLBACK"
         if not targets:
             if diagnostics["assignment_portal_count"] == 0:
                 diagnostics["last_reject_reason"] = "NO_ASSIGNMENT_PORTAL"

@@ -10,7 +10,7 @@ ROOM_COMBINED_COVERAGE_TARGET="${STAGE_B_ROOM_COMBINED_COVERAGE_TARGET:-0.84}"
 MOTION_SPEED="${STAGE_B_MOTION_SPEED:-0.60}"
 TRANSITION_ONLY="${STAGE_B_TRANSITION_ONLY:-0}"
 GATE_OVERRIDE="${STAGE_B_GATE_OVERRIDE:-}"
-START_RVIZ="${STAGE_B_START_RVIZ:-1}"
+START_RVIZ="${STAGE_B_START_RVIZ:-0}"
 RVIZ_CONFIG="${STAGE_B_RVIZ_CONFIG:-$WORKSPACE_DIR/src/simnav/rviz/stage_b.rviz}"
 GAZEBO_GUI="${STAGE_B_GUI:-true}"
 RUN_DIR="$OUTPUT_ROOT/seed_$SEED_VALUE"
@@ -38,6 +38,8 @@ CORE_PID=""
 AUTO_PID=""
 NAV_PID=""
 BEHAVIOR_PID=""
+SUPPORT_PID=""
+SUPERVISOR_PID=""
 MONITOR_PID=""
 RVIZ_PID=""
 
@@ -68,6 +70,7 @@ if [ "${STAGE_B_ALLOW_CONCURRENT:-0}" != "1" ]; then
   for process_pattern in \
     'gzserver' 'gzclient' 'fastlio_mapping' 'junior_ctrl' \
     'coverage_explorer_node.py' 'danger_detector_node.py' \
+    'elevator_transition_node.py' 'two_floor_explorer_supervisor.py' \
     'stage_b_localization.launch' 'stage_b_behavior.launch' 'rviz -d' \
     'monitor_stage_b_coverage.py'; do
     if pgrep -af "$process_pattern" 2>/dev/null | awk -v self="$$" \
@@ -112,6 +115,8 @@ cleanup() {
   terminate_process_group "$MONITOR_PID"
   terminate_process_group "$RVIZ_PID"
   terminate_process_group "$BEHAVIOR_PID"
+  terminate_process_group "$SUPERVISOR_PID"
+  terminate_process_group "$SUPPORT_PID"
   terminate_process_group "$NAV_PID"
   terminate_process_group "$AUTO_PID"
   terminate_process_group "$CORE_PID"
@@ -206,6 +211,15 @@ GUI="$GAZEBO_GUI" PAUSED=true AUTO_UNPAUSE=1 AUTO_UNPAUSE_DELAY=6 \
   "${RUN_PREFIX[@]}" setsid ./auto.sh > "$RUN_DIR/auto.log" 2>&1 &
 AUTO_PID=$!
 
+# Some Gazebo startup paths keep physics paused even after auto.sh schedules
+# its delayed unpause. Explicitly release physics before waiting on sensors.
+for _ in $(seq 1 60); do
+  if rosservice list 2>/dev/null | rg -qx '/gazebo/unpause_physics'; then
+    timeout 3s rosservice call /gazebo/unpause_physics >/dev/null 2>&1 || true
+    break
+  fi
+  sleep 0.5
+done
 wait_for_topic /clock 180
 wait_for_topic /trunk_imu 180
 wait_for_topic /a1_gazebo/FR_hip_controller/state 180
@@ -233,21 +247,40 @@ fi
 python3 team_scripts/activate_stage_b_controller.py --mode rl \
   > "$RUN_DIR/controller_rl.log" 2>&1
 
-if [ "$RUN_MODE" != "coverage" ] && [ "$RUN_MODE" != "full" ] && [ "$RUN_MODE" != "two_floor" ]; then
+if [ "$RUN_MODE" != "coverage" ] && [ "$RUN_MODE" != "full" ] \
+  && [ "$RUN_MODE" != "two_floor" ] && [ "$RUN_MODE" != "three_floor" ]; then
   echo "unsupported active run mode: $RUN_MODE (door modes are archived)" >&2
   exit 2
 fi
 
-"${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_behavior.launch \
-  result_dir:="$RESULTS_DIR" \
-  room_combined_coverage_target:="$ROOM_COMBINED_COVERAGE_TARGET" \
-  motion_speed:="$MOTION_SPEED" \
-  enable_elevator_transition:="$([ "$RUN_MODE" = "full" ] || [ "$RUN_MODE" = "two_floor" ] || [ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
-  elevator_transition_only:="$([ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
-  enable_coverage_explorer:="$([ "$TRANSITION_ONLY" = "1" ] && echo false || echo true)" \
-  gate_override:="${GATE_OVERRIDE:-[]}" \
-  > "$RUN_DIR/behavior.log" 2>&1 &
-BEHAVIOR_PID=$!
+if [ "$RUN_MODE" = "two_floor" ] || [ "$RUN_MODE" = "three_floor" ]; then
+  "${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_two_floor_support.launch \
+    result_dir:="$RESULTS_DIR" \
+    max_floor:="$([ "$RUN_MODE" = "three_floor" ] && echo 2 || echo 1)" \
+    start_immediately:=false \
+    finish_at_top_floor:=false \
+    gate_override:="${GATE_OVERRIDE:-[]}" \
+    > "$RUN_DIR/multi_floor_support.log" 2>&1 &
+  SUPPORT_PID=$!
+  wait_for_topic /simnav/elevator_status 60
+  "${RUN_PREFIX[@]}" setsid env \
+    STAGE_B_ROOM_COMBINED_COVERAGE_TARGET="$ROOM_COMBINED_COVERAGE_TARGET" \
+    STAGE_B_MOTION_SPEED="$MOTION_SPEED" \
+    python3 team_scripts/two_floor_explorer_supervisor.py \
+    > "$RUN_DIR/multi_floor_supervisor.log" 2>&1 &
+  SUPERVISOR_PID=$!
+else
+  "${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_behavior.launch \
+    result_dir:="$RESULTS_DIR" \
+    room_combined_coverage_target:="$ROOM_COMBINED_COVERAGE_TARGET" \
+    motion_speed:="$MOTION_SPEED" \
+    enable_elevator_transition:="$([ "$RUN_MODE" = "full" ] || [ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
+    elevator_transition_only:="$([ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
+    enable_coverage_explorer:="$([ "$TRANSITION_ONLY" = "1" ] && echo false || echo true)" \
+    gate_override:="${GATE_OVERRIDE:-[]}" \
+    > "$RUN_DIR/behavior.log" 2>&1 &
+  BEHAVIOR_PID=$!
+fi
 if [ "$TRANSITION_ONLY" = "1" ]; then
   wait_for_topic /simnav/elevator_status 60
 else
@@ -258,8 +291,11 @@ MONITOR_ARGS=(--sim-timeout "$SIM_TIMEOUT" --seed "$SEED_VALUE")
 if [ "$RUN_MODE" = "full" ]; then
   MONITOR_ARGS+=(--wait-floor-transition)
 fi
-if [ "$RUN_MODE" = "two_floor" ]; then
+if [ "$RUN_MODE" = "two_floor" ] || [ "$RUN_MODE" = "three_floor" ]; then
   MONITOR_ARGS+=(--two-floor)
+fi
+if [ "$RUN_MODE" = "three_floor" ]; then
+  MONITOR_ARGS+=(--three-floor)
 fi
 if [ "$TRANSITION_ONLY" = "1" ]; then
   MONITOR_ARGS+=(--wait-floor-transition --transition-only)
@@ -277,7 +313,7 @@ set -e
 save_visual_artifacts
 copy_artifacts
 
-if [ "$RUN_MODE" != "two_floor" ]; then
+if [ "$RUN_MODE" != "two_floor" ] && [ "$RUN_MODE" != "three_floor" ]; then
   set +e
   python3 team_scripts/evaluate_stage_b_danger.py \
     --truth "$RUN_DIR/danger_truth.json" \

@@ -8,7 +8,7 @@
     <remap from="scan" to="$(arg scan_topic)"/>
     <param name="target_frame" value="base"/>
     <param name="transform_tolerance" value="0.05"/>
-    <param name="min_height" value="0.08"/>
+    <param name="min_height" value="-0.12"/>
     <param name="max_height" value="1.50"/>
     <param name="angle_min" value="-3.14159265"/>
     <param name="angle_max" value="3.14159265"/>

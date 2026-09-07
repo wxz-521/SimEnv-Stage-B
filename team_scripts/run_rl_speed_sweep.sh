@@ -75,7 +75,7 @@ fi
 python3 team_scripts/activate_stage_b_controller.py --mode sequence --stand-hold 2.0 \
   >"$RUN_DIR/activate.log" 2>&1
 python3 team_scripts/measure_rl_speed.py \
-  --speeds "${SPEEDS:-0.30,0.45,0.60,0.75,0.90,1.05}" \
+  --speeds="${SPEEDS:-0.30,0.45,0.60,0.75,0.90,1.05}" \
   --phase "${PHASE:-4.0}" \
   --settle "${SETTLE:-1.0}" \
   --output "$RUN_DIR/result.json" \

@@ -1,0 +1,34 @@
+<launch>
+  <arg name="result_dir" default="/workspace/SimEnv/results"/>
+  <arg name="max_floor" default="1"/>
+  <arg name="start_immediately" default="false"/>
+  <arg name="gate_override" default="[]"/>
+  <arg name="finish_at_top_floor" default="false"/>
+  <node pkg="simnav" type="danger_detector_node.py" name="danger_detector" output="screen">
+    <param name="confirmation_frames" value="3"/>
+    <param name="cluster_radius" value="0.75"/>
+    <param name="camera_observation_markers_enabled" value="true"/>
+    <param name="camera_observation_resolution" value="0.25"/>
+    <param name="camera_observation_pixel_stride" value="32"/>
+    <param name="camera_observation_max_cells" value="30000"/>
+    <param name="camera_observation_summary_period" value="0.50"/>
+    <param name="output_file" value="$(arg result_dir)/detected_danger.json"/>
+    <param name="debug_output_file" value="$(arg result_dir)/detected_danger_debug.json"/>
+  </node>
+  <node pkg="simnav" type="elevator_transition_node.py" name="elevator_transition" output="screen">
+    <param name="enabled" value="true"/>
+    <param name="elevator_id" value="elevator_main"/>
+    <param name="target_floor" value="1"/>
+    <param name="max_floor" value="$(arg max_floor)"/>
+    <param name="start_immediately" value="$(arg start_immediately)"/>
+    <param name="finish_at_top_floor" value="$(arg finish_at_top_floor)"/>
+    <param name="gate_override" value="$(arg gate_override)"/>
+    <param name="motion_speed" value="0.35"/>
+    <param name="crossing_speed" value="0.22"/>
+    <param name="navigation_clearance" value="0.20"/>
+    <param name="preferred_clearance" value="0.32"/>
+    <param name="route_replan_period" value="2.0"/>
+    <param name="elevator_candidate_confirm_cycles" value="5"/>
+    <param name="elevator_lobby_wall_offset" value="1.65"/>
+  </node>
+</launch>

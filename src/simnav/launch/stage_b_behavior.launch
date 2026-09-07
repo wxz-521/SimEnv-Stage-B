@@ -46,7 +46,7 @@
     <param name="clearance_cost_weight" value="1.4"/>
     <param name="turn_cost_weight" value="0.10"/>
     <param name="frontier_cluster_radius" value="0.45"/>
-    <param name="frontier_revisit_radius" value="0.70"/>
+    <param name="frontier_revisit_radius" value="0.35"/>
     <param name="information_radius" value="2.5"/>
     <param name="replan_period" value="1.0"/>
     <!-- Room-topology hysteresis: permit useful replans without target churn. -->

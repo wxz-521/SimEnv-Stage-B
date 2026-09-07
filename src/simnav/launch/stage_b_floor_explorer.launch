@@ -1,0 +1,86 @@
+<launch>
+  <arg name="node_name" default="coverage_explorer"/>
+  <arg name="corridor_yaw" default="0.0"/>
+  <arg name="initial_forward_distance" default="14.5"/>
+  <arg name="room_combined_coverage_target" default="0.70"/>
+  <arg name="camera_coverage_target" default="0.70"/>
+  <arg name="combined_coverage_target" default="0.69"/>
+  <arg name="motion_speed" default="0.60"/>
+  <arg name="initial_lateral_correction_start" default="0.20"/>
+  <arg name="initial_lateral_correction_gain" default="0.30"/>
+  <arg name="initial_yaw_correction_gain" default="0.45"/>
+  <arg name="initial_max_correction_yaw" default="0.18"/>
+  <arg name="initial_correction_speed" default="0.32"/>
+  <arg name="initial_test_yaw_bias" default="0.0"/>
+  <arg name="initial_test_yaw_bias_distance" default="0.0"/>
+  <arg name="initial_test_post_entry_turn" default="0.0"/>
+  <arg name="initial_test_post_entry_turn_progress" default="2.0"/>
+  <arg name="portal_jamb_length" default="0.25"/>
+  <arg name="portal_jamb_support" default="0.20"/>
+  <node pkg="simnav" type="coverage_explorer_node.py" name="$(arg node_name)" output="screen">
+    <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
+    <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
+    <param name="initial_forward_speed" value="0.45"/>
+    <param name="initial_centering_start_distance" value="10.5"/>
+    <param name="initial_lateral_correction_start" value="$(arg initial_lateral_correction_start)"/>
+    <param name="initial_lateral_correction_gain" value="$(arg initial_lateral_correction_gain)"/>
+    <param name="initial_yaw_correction_gain" value="$(arg initial_yaw_correction_gain)"/>
+    <param name="initial_max_correction_yaw" value="$(arg initial_max_correction_yaw)"/>
+    <param name="initial_correction_speed" value="$(arg initial_correction_speed)"/>
+    <param name="initial_test_yaw_bias" value="$(arg initial_test_yaw_bias)"/>
+    <param name="initial_test_yaw_bias_distance" value="$(arg initial_test_yaw_bias_distance)"/>
+    <param name="initial_test_post_entry_turn" value="$(arg initial_test_post_entry_turn)"/>
+    <param name="initial_test_post_entry_turn_progress" value="$(arg initial_test_post_entry_turn_progress)"/>
+    <param name="virtual_gate_forward_distance" value="10.5"/>
+    <param name="task_back_extension" value="0.60"/>
+    <param name="task_entry_buffer" value="0.45"/>
+    <param name="task_forward_depth" value="35.0"/>
+    <param name="task_lateral_half_width" value="9.5"/>
+    <param name="task_corridor_half_width" value="1.1"/>
+    <param name="virtual_gate_half_width" value="1.1"/>
+    <param name="virtual_gate_depth" value="0.30"/>
+    <param name="portal_jamb_length" value="$(arg portal_jamb_length)"/>
+    <param name="portal_jamb_support" value="$(arg portal_jamb_support)"/>
+    <param name="show_room_virtual_doors" value="true"/>
+    <param name="robot_radius" value="0.38"/>
+    <param name="safety_margin" value="0.04"/>
+    <param name="navigation_clearance" value="0.20"/>
+    <param name="preferred_clearance" value="0.32"/>
+    <param name="clearance_cost_weight" value="1.4"/>
+    <param name="turn_cost_weight" value="0.10"/>
+    <param name="frontier_cluster_radius" value="0.45"/>
+    <param name="frontier_revisit_radius" value="0.35"/>
+    <param name="information_radius" value="2.5"/>
+    <param name="replan_period" value="1.0"/>
+    <param name="target_replace_min_age" value="4.0"/>
+    <param name="target_replace_gain_ratio" value="1.30"/>
+    <param name="target_replace_stall" value="8.0"/>
+    <param name="room_completion_miss_cycles" value="3"/>
+    <param name="portal_confirm_cycles" value="3"/>
+    <param name="door_search_step_distance" value="1.0"/>
+    <param name="door_search_wait_cycles" value="3"/>
+    <param name="door_search_front_limit" value="3.0"/>
+    <param name="door_search_rear_limit" value="3.0"/>
+    <param name="minimum_room_stations" value="1"/>
+    <param name="front_station_search_limit" value="10.0"/>
+    <param name="rear_transit_distance" value="12.0"/>
+    <param name="room_combined_coverage_target" value="$(arg room_combined_coverage_target)"/>
+    <param name="expected_rooms_per_floor" value="4"/>
+    <param name="far_room_first" value="false"/>
+    <param name="target_tolerance" value="0.35"/>
+    <param name="heading_tolerance" value="0.25"/>
+    <param name="motion_stop_distance" value="0.48"/>
+    <param name="motion_speed" value="$(arg motion_speed)"/>
+    <param name="turn_speed" value="0.65"/>
+    <param name="laser_coverage_target" value="0.95"/>
+    <param name="camera_coverage_target" value="$(arg camera_coverage_target)"/>
+    <param name="combined_coverage_target" value="$(arg combined_coverage_target)"/>
+    <param name="camera_weight" value="0.95"/>
+    <param name="completion_stable_duration" value="3.0"/>
+    <param name="sphere_min_hits" value="3"/>
+    <param name="sphere_point_stride" value="2"/>
+    <param name="sphere_process_period" value="0.50"/>
+    <param name="sphere_review_hold" value="2.0"/>
+    <param name="camera_resolution" value="0.25"/>
+  </node>
+</launch>
