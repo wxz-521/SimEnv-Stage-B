@@ -13,21 +13,23 @@ from std_msgs.msg import Bool, String
 class Supervisor:
     def __init__(self):
         self.lock = threading.RLock()
+        # Match run_stage_b_seed.sh: the room metric is near-saturated at 0.84
+        # while the separate combined gate sits at the validated 0.40.  A 0.70
+        # room default here silently started multi-floor runs at a different
+        # threshold than the single-floor baseline whenever the caller did not
+        # export the environment explicitly.
         self.room_coverage_target = float(
-            os.environ.get("STAGE_B_ROOM_COMBINED_COVERAGE_TARGET", "0.70")
+            os.environ.get("STAGE_B_ROOM_COMBINED_COVERAGE_TARGET", "0.84")
         )
         self.motion_speed = float(os.environ.get("STAGE_B_MOTION_SPEED", "0.60"))
         self.camera_coverage_target = float(
             os.environ.get(
                 "STAGE_B_CAMERA_COVERAGE_TARGET",
-                str(self.room_coverage_target),
+                "0.40",
             )
         )
         self.combined_coverage_target = float(
-            os.environ.get(
-                "STAGE_B_COMBINED_COVERAGE_TARGET",
-                str(max(0.05, self.room_coverage_target - 0.01)),
-            )
+            os.environ.get("STAGE_B_COMBINED_COVERAGE_TARGET", "0.40")
         )
         self.initial_test_yaw_bias = float(
             os.environ.get("STAGE_B_INITIAL_TEST_YAW_BIAS", "0.0")

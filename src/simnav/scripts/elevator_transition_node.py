@@ -12,7 +12,7 @@ import numpy as np
 
 import rospy
 import tf.transformations as transformations
-from building_generator_interfaces.srv import CallElevator
+from building_generator_interfaces.srv import CallElevator, SetDoorState
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
@@ -136,6 +136,20 @@ class ElevatorTransition:
         # the body is still settling at spawn.  Ignore attitude and height for
         # the first seconds of the run so startup cannot look like a fall.
         self.fall_grace_seconds = float(rospy.get_param("~fall_grace_seconds", 15.0))
+        # The mission ends at the spawn point, not inside the top-floor lift.
+        # After the last floor the robot rides back down, opens the main
+        # entrance and drives to the origin of the navigation frame, which is
+        # the spawn pose (the localisation bridge anchors the source frame
+        # there).  Both ids below are public scene information.
+        self.ground_floor = int(rospy.get_param("~ground_floor", 0))
+        self.main_entrance_id = str(
+            rospy.get_param("~main_entrance_door_id", "main_entrance")
+        )
+        self.return_to_spawn_tolerance = max(
+            0.05, float(rospy.get_param("~return_to_spawn_tolerance", 0.45))
+        )
+        self.main_entrance_opened = False
+        self.returned_to_spawn = False
         # Wall clock, not ROS time: the sim clock is paused during startup, so
         # a ROS-time stamp of zero would keep the grace window open forever.
         self.started_at_wall = time.time()
@@ -146,6 +160,9 @@ class ElevatorTransition:
         self.reference_floor_ready = False
         self.reference_floor_fault = None
         self.reference_floor_last_status = None
+        # Accumulated across status messages; see _reference_floor_snapshot.
+        self.reference_rooms_seen = 0
+        self.reference_lock_cleared = False
         self.elevator_lobby_wall_offset = float(
             rospy.get_param("~elevator_lobby_wall_offset", 1.65)
         )
@@ -228,6 +245,7 @@ class ElevatorTransition:
         )
         rospy.Subscriber("/scan_2d", LaserScan, self._scan_callback, queue_size=1)
         self.elevator_service = rospy.ServiceProxy("/call_elevator", CallElevator)
+        self.door_service = rospy.ServiceProxy("/set_door_state", SetDoorState)
         self.plane_policy_service = rospy.ServiceProxy(
             "/unitree/select_plane_policy", SetBool
         )
@@ -270,6 +288,13 @@ class ElevatorTransition:
         Upper floors inherit this topology verbatim, so an unresolved ground
         floor must block the elevator instead of propagating a broken
         structure to every later floor.
+
+        Readiness is accumulated across status messages rather than judged
+        from the newest one alone.  The explorer stops publishing the moment
+        the floor completes, so if that final message happened to be sent
+        while the last room still held the topology lock, a single-message
+        test would latch a fault that nothing could ever clear and the
+        elevator would wait forever.
         """
         if self.current_floor != 0 or self.floor1_context_published:
             return
@@ -290,19 +315,26 @@ class ElevatorTransition:
         completed = payload.get("completed_topologies")
         completed_count = len(completed) if isinstance(completed, list) else 0
         expected = int(payload.get("expected_rooms_per_floor") or 0)
-        if topology_lock:
+        if expected > 0:
+            self.reference_rooms_seen = max(self.reference_rooms_seen, completed_count)
+        if topology_lock is None:
+            self.reference_lock_cleared = True
+
+        if not self.reference_floor_topology:
+            self.reference_floor_fault = "REFERENCE_TOPOLOGY_EMPTY"
+            return
+        if expected > 0 and self.reference_rooms_seen < expected:
+            self.reference_floor_fault = "REFERENCE_TOPOLOGY_INCOMPLETE:{}/{}".format(
+                self.reference_rooms_seen, expected
+            )
+            return
+        if not self.reference_lock_cleared:
             self.reference_floor_fault = "REFERENCE_TOPOLOGY_LOCKED:{}".format(
                 topology_lock
             )
-        elif expected > 0 and completed_count < expected:
-            self.reference_floor_fault = "REFERENCE_TOPOLOGY_INCOMPLETE:{}/{}".format(
-                completed_count, expected
-            )
-        elif not self.reference_floor_topology:
-            self.reference_floor_fault = "REFERENCE_TOPOLOGY_EMPTY"
-        else:
-            self.reference_floor_fault = None
-            self.reference_floor_ready = True
+            return
+        self.reference_floor_fault = None
+        self.reference_floor_ready = True
 
     def _explorer_status_callback(self, message):
         try:
@@ -962,9 +994,78 @@ class ElevatorTransition:
                     self.ride_error = None
                     self._set_state("RIDE_TO_NEXT_FLOOR")
                 else:
-                    self.two_floor_mission_complete = True
-                    self._set_state("RETURNED_TO_FLOOR_1_ELEVATOR")
-                    self.mission_complete_pub.publish(Bool(data=True))
+                    # Every floor is explored.  Ride back to the ground floor
+                    # instead of declaring the mission finished inside the lift.
+                    self.target_floor = self.ground_floor
+                    self.ride_thread = None
+                    self.ride_response = None
+                    self.ride_error = None
+                    self._set_state("RIDE_TO_GROUND_FLOOR")
+        elif state == "RIDE_TO_GROUND_FLOOR":
+            self._stop()
+            self._start_ride()
+            if self.ride_error is not None:
+                self._fail("ELEVATOR_SERVICE_FAILED: {}".format(self.ride_error))
+            elif self.ride_response is not None:
+                if (
+                    not self.ride_response.accepted
+                    or self.ride_response.current_floor != self.ground_floor
+                ):
+                    self._fail("ELEVATOR_REJECTED: {}".format(self.ride_response.message))
+                else:
+                    self.elevator_heading = normalize_angle(self.elevator_heading + math.pi)
+                    self.current_floor = int(self.ride_response.current_floor)
+                    self._set_state("ALIGN_GROUND_FLOOR_EXIT")
+        elif state == "ALIGN_GROUND_FLOOR_EXIT":
+            if self._align(pose, self.elevator_heading):
+                self.travel_anchor = pose[:2]
+                self._set_state("EXIT_GROUND_FLOOR")
+        elif state == "EXIT_GROUND_FLOOR":
+            if self._drive_distance(
+                pose, self.exit_distance, self.crossing_speed,
+                self.minimum_exit_progress,
+            ):
+                self._stop()
+                self.travel_anchor = pose[:2]
+                self._set_state("OPEN_MAIN_ENTRANCE")
+        elif state == "OPEN_MAIN_ENTRANCE":
+            self._stop()
+            if not self.main_entrance_opened:
+                try:
+                    rospy.wait_for_service("/set_door_state", timeout=5.0)
+                    response = self.door_service(self.main_entrance_id, True)
+                    self.main_entrance_opened = True
+                    rospy.loginfo(
+                        "Main entrance opened: accepted=%s state=%s",
+                        response.accepted,
+                        response.state,
+                    )
+                except (rospy.ROSException, rospy.ServiceException) as error:
+                    rospy.logwarn_throttle(
+                        5.0, "Waiting for main entrance door service: %s", error
+                    )
+                    return
+            self._set_state("RETURN_TO_SPAWN")
+        elif state == "RETURN_TO_SPAWN":
+            # The navigation frame origin is the spawn pose, so the final goal
+            # needs no layout information beyond the public start position.
+            spawn = (0.0, 0.0)
+            if source_pose is not None:
+                reached = self._drive_planned_to(
+                    source_pose,
+                    spawn,
+                    arrival_tolerance=self.return_to_spawn_tolerance,
+                )
+            else:
+                self._stop()
+                reached = False
+            if reached:
+                self._stop()
+                self.returned_to_spawn = True
+                self.two_floor_mission_complete = True
+                self._set_state("RETURNED_TO_SPAWN")
+                self.mission_complete_pub.publish(Bool(data=True))
+                rospy.loginfo("Mission complete: returned to spawn")
 
         self._publish_status()
 
@@ -979,10 +1080,18 @@ class ElevatorTransition:
                 "floor1_topology_isolated": self.floor1_topology_isolated,
                 "floor1_complete": self.floor1_complete,
                 "two_floor_mission_complete": self.two_floor_mission_complete,
+                "returned_to_spawn": bool(self.returned_to_spawn),
+                "main_entrance_opened": bool(self.main_entrance_opened),
                 "floor1_gate": list(self.floor1_gate)
                 if self.floor1_gate is not None else None,
                 "floor0_gate_source": list(self.floor0_gate_source)
                 if self.floor0_gate_source is not None else None,
+                # The reference-floor gate decides whether the elevator may
+                # leave.  Without these fields a blocked departure is
+                # indistinguishable from a slow one.
+                "reference_floor_ready": bool(self.reference_floor_ready),
+                "reference_floor_fault": self.reference_floor_fault,
+                "reference_floor_portals": len(self.reference_floor_topology),
                 "target_floor": self.target_floor,
                 "route_target": list(self.route_target)
                 if self.route_target is not None else None,

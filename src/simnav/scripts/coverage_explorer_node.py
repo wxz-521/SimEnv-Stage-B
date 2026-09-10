@@ -38,6 +38,7 @@ from coverage_explorer_core import (
     infer_task_extent,
     detect_room_portals,
     detect_lobby_portals,
+    measure_corridor_walls,
     normalize_angle,
     pair_room_portals,
     portal_return_along_offsets,
@@ -97,6 +98,15 @@ class CoverageExplorer:
             ),
         )
         self.configured_yaw = float(rospy.get_param("~corridor_yaw", 0.0))
+        # Re-anchor the virtual gate onto the observed corridor midline so a
+        # lateral bias at the entrance does not become the axis for every
+        # doorway decision in the run.
+        self.recenter_gate_on_walls = bool(
+            rospy.get_param("~recenter_gate_on_walls", True)
+        )
+        self.maximum_gate_recenter = max(
+            0.0, float(rospy.get_param("~maximum_gate_recenter", 0.80))
+        )
         self.forward_anchor = None
         self.forward_yaw = None
         self.world_forward_yaw = None
@@ -303,6 +313,12 @@ class CoverageExplorer:
         )
         self.room_completion_miss_cycles = max(
             2, int(rospy.get_param("~room_completion_miss_cycles", 3))
+        )
+        # Bounded wait for an opposing room that currently has no executable
+        # target.  Large enough to ride out a sparse map, small enough that a
+        # physically unreachable partner cannot hang the floor forever.
+        self.station_partner_wait_cycles = max(
+            5, int(rospy.get_param("~station_partner_wait_cycles", 20))
         )
         self.latest_snapshot = None
         self.floor_complete = False
@@ -1245,15 +1261,35 @@ class CoverageExplorer:
             if state.get("station_partner") is not None:
                 # The first room of this station is already complete.  A
                 # transient sparse map must not release the station and let a
-                # distant corridor frontier bypass the opposing room.
+                # distant corridor frontier bypass the opposing room.  The wait
+                # must still be bounded: when the partner is physically
+                # unreachable the planner produces no target forever and the
+                # mission hangs with the floor unfinished.  Observed on the
+                # second floor: the robot finished the rear-right room, sat
+                # inside it, and waited on the rear-left room for over 100 s
+                # with room_reachable_cells = 0.
+                waited = int(state.get("partner_wait_cycles", 0)) + 1
+                state["partner_wait_cycles"] = waited
                 state["state"] = "APPROACHING"
                 self.topology_miss_cycles[lock] = 0
-                rospy.logwarn_throttle(
-                    5.0,
-                    "Opposite room %s has no executable target yet; keeping station lock",
+                if waited < self.station_partner_wait_cycles:
+                    rospy.logwarn_throttle(
+                        5.0,
+                        "Opposite room %s has no executable target yet; keeping station lock",
+                        lock,
+                    )
+                    return False
+                # Bounded wait expired: release the station so another portal or
+                # corridor frontier can be tried instead of blocking the floor.
+                state["state"] = "BLOCKED"
+                self.topology_lock = None
+                self.topology_region = "CORRIDOR"
+                rospy.logwarn(
+                    "Opposite room %s unreachable for %d cycles; releasing station lock",
                     lock,
+                    waited,
                 )
-                return False
+                return True
             # We never crossed the doorway.  This is a failed approach, not a
             # completed room.  Release the lock so another portal can be tried
             # while the blocked target remains on a short cooldown.
@@ -1289,25 +1325,46 @@ class CoverageExplorer:
             return False
         portal = self.topology_portals.get(str(lock))
         along, lateral = self._topology_coordinates()
-        if portal is None or along is None or lateral is None:
+        if along is None or lateral is None:
             return False
-        longitudinal_ok = abs(along - portal.along) <= max(
-            1.0, 0.5 * float(portal.width) + 0.45
-        )
-        # The doorway carries the wall offset the raw map actually showed.
-        # Reverting to the configured half width here reintroduces the
-        # gate-axis bias the detector no longer has: an off-centre axis made a
-        # robot that was already inside the room fail the side test, so it had
-        # to drive back to the axis and re-enter.
-        wall = (
-            float(getattr(portal, "measured_wall", 0.0))
-            or abs(float(portal.lateral))
-            or float(self.planner.corridor_half_width)
-        )
+        side = None
+        wall = None
+        longitudinal_ok = True
+        if portal is None:
+            # The planner can lock a room whose freshly detected id has no
+            # cached portal entry (an upper floor re-bins the same doorway, so
+            # ROOM_R_17 appears beside the reused ROOM_R_16/ROOM_R_15).  Without
+            # this fallback the entry proof could never become true and the
+            # approach was condemned to fail after its miss budget: observed on
+            # every second-floor room in a three-floor run, leaving the floor
+            # unfinished.  The wall offset is still measured from the live map
+            # in detect_room_portals, so the side test keeps the same geometry.
+            side = "L" if lateral > 0.0 else "R"
+            left_wall, right_wall = measure_corridor_walls(
+                self.raw_grid,
+                self.gate_source[:2],
+                self.gate_source[2],
+                self.planner.corridor_half_width,
+            ) if self.raw_grid is not None and self.gate_source is not None else (None, None)
+            measured = left_wall if side == "L" else right_wall
+            wall = float(measured) if measured else float(self.planner.corridor_half_width)
+        else:
+            side = portal.side
+            longitudinal_ok = abs(along - portal.along) <= max(
+                1.0, 0.5 * float(portal.width) + 0.45
+            )
+            # The doorway carries the wall offset the raw map actually showed.
+            # Reverting to the configured half width here reintroduces the
+            # gate-axis bias the detector no longer has: an off-centre axis made
+            # a robot that was already inside the room fail the side test, so it
+            # had to drive back to the axis and re-enter.
+            wall = (
+                float(getattr(portal, "measured_wall", 0.0))
+                or abs(float(portal.lateral))
+                or float(self.planner.corridor_half_width)
+            )
         side_ok = (
-            lateral > wall + 0.05
-            if portal.side == "L"
-            else lateral < -wall - 0.05
+            lateral > wall + 0.05 if side == "L" else lateral < -wall - 0.05
         )
         if not (longitudinal_ok and side_ok):
             return False
@@ -1514,11 +1571,31 @@ class CoverageExplorer:
             len(unreviewed),
         )
         now = rospy.Time.now()
+        # A completed floor that never latches is otherwise invisible: the run
+        # simply stops exploring and the elevator waits on floor_complete.
+        # Report the predicate inputs whenever they disagree with the count.
+        rooms = len(self.completed_topologies)
+        if rooms >= int(self.expected_rooms_per_floor) and not meets:
+            rospy.logwarn_throttle(
+                5.0,
+                "Completion blocked: rooms=%d/%d unreviewed=%d stable=%d reviewed=%d",
+                rooms,
+                int(self.expected_rooms_per_floor),
+                len(unreviewed),
+                len(self._stable_spheres()),
+                len(self.reviewed_hypotheses),
+            )
         if not meets:
             self.completion_since = None
             return
         if self.completion_since is None:
             self.completion_since = now
+            rospy.loginfo(
+                "Floor completion pending: rooms=%d/%d stable %.1fs",
+                rooms,
+                int(self.expected_rooms_per_floor),
+                self.completion_stable_duration,
+            )
             return
         if (now - self.completion_since).to_sec() >= self.completion_stable_duration:
             self.floor_complete = True
@@ -1845,19 +1922,71 @@ class CoverageExplorer:
                 rospy.loginfo("Plane locomotion policy active; continuing exploration")
             with self.lock:
                 gate_distance = self.virtual_gate_forward_distance
-                self.gate_source = (
+                gate_source = (
                     anchor[0] + gate_distance * math.cos(yaw),
                     anchor[1] + gate_distance * math.sin(yaw),
                     yaw,
                 )
+                gate_world = None
                 if self.lobby_entry_world is not None:
-                    self.gate_world = (
+                    gate_world = (
                         self.lobby_entry_world[0]
                         + gate_distance * math.cos(self.world_forward_yaw),
                         self.lobby_entry_world[1]
                         + gate_distance * math.sin(self.world_forward_yaw),
                         self.world_forward_yaw,
                     )
+                # The axis above is a straight extrapolation of the robot's
+                # starting pose, so any lateral bias at the entrance becomes
+                # the corridor axis for the whole run.  Measured on a real
+                # three-floor run the axis sat 0.53 m off centre (left wall
+                # 0.77 m, right wall 1.63 m), which misplaced every doorway
+                # band and mis-binned the rear doors.  Re-anchor the gate on
+                # the wall midline once the corridor walls are observed.
+                raw = self.raw_grid
+            if self.recenter_gate_on_walls and raw is not None:
+                left_wall, right_wall = measure_corridor_walls(
+                    raw,
+                    gate_source[:2],
+                    gate_source[2],
+                    self.planner.corridor_half_width,
+                )
+                if left_wall is not None and right_wall is not None:
+                    spacing = float(left_wall) + float(right_wall)
+                    expected = 2.0 * self.planner.corridor_half_width
+                    if 0.60 * expected <= spacing <= 1.60 * expected:
+                        offset = 0.5 * (float(left_wall) - float(right_wall))
+                        offset = max(
+                            -self.maximum_gate_recenter,
+                            min(self.maximum_gate_recenter, offset),
+                        )
+                        # Positive offset means the left wall is farther away,
+                        # so the axis sits left of centre and the gate must
+                        # move right, i.e. towards negative lateral.
+                        cosine, sine = math.cos(yaw), math.sin(yaw)
+                        gate_source = (
+                            gate_source[0] - offset * sine,
+                            gate_source[1] + offset * cosine,
+                            yaw,
+                        )
+                        if gate_world is not None:
+                            world_cosine = math.cos(self.world_forward_yaw)
+                            world_sine = math.sin(self.world_forward_yaw)
+                            gate_world = (
+                                gate_world[0] - offset * world_sine,
+                                gate_world[1] + offset * world_cosine,
+                                self.world_forward_yaw,
+                            )
+                        rospy.loginfo(
+                            "Gate re-anchored on wall midline: offset=%.2f m "
+                            "(left=%.2f right=%.2f)",
+                            offset,
+                            float(left_wall),
+                            float(right_wall),
+                        )
+            with self.lock:
+                self.gate_source = gate_source
+                self.gate_world = gate_world
                 self.topology_region = "CORRIDOR"
                 self.active_target = None
                 self.last_plan_time = rospy.Time(0)

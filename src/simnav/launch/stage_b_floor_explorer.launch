@@ -2,6 +2,7 @@
   <arg name="node_name" default="coverage_explorer"/>
   <arg name="corridor_yaw" default="0.0"/>
   <arg name="initial_forward_distance" default="14.5"/>
+  <arg name="motion_speed" default="0.60"/>
   <arg name="room_combined_coverage_target" default="0.40"/>
   <arg name="camera_coverage_target" default="0.40"/>
   <arg name="combined_coverage_target" default="0.40"/>
@@ -57,6 +58,7 @@
     <param name="target_replace_gain_ratio" value="1.30"/>
     <param name="target_replace_stall" value="8.0"/>
     <param name="room_completion_miss_cycles" value="3"/>
+    <param name="station_partner_wait_cycles" value="20"/>
     <param name="portal_confirm_cycles" value="1"/>
     <param name="door_search_step_distance" value="1.0"/>
     <param name="door_search_wait_cycles" value="3"/>
@@ -71,7 +73,7 @@
     <param name="target_tolerance" value="0.35"/>
     <param name="heading_tolerance" value="0.25"/>
     <param name="motion_stop_distance" value="0.48"/>
-    <param name="motion_speed" value="0.60"/>
+    <param name="motion_speed" value="$(arg motion_speed)"/>
     <param name="turn_speed" value="0.65"/>
     <param name="laser_coverage_target" value="0.40"/>
     <param name="camera_coverage_target" value="$(arg camera_coverage_target)"/>

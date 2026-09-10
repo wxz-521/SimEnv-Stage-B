@@ -235,6 +235,59 @@ def normalize_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+def measure_corridor_walls(
+    grid: GridView,
+    gate_center: Tuple[float, float],
+    forward_yaw: float,
+    corridor_half_width: float,
+    forward_depth: float = 35.0,
+    lateral_half_width: float = 9.5,
+    minimum_cells: int = 20,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return the observed lateral distance to the left and right corridor walls.
+
+    The corridor axis is anchored to the robot's initial pose, so it can sit
+    off the physical centreline.  Measured on a three-floor run, the axis was
+    0.53 m off centre: the left wall read 0.77 m and the right 1.63 m while the
+    true wall spacing is 1.10 m per side.  Every downstream lateral judgement
+    (doorway bands, room entry, return to corridor) inherits that bias unless
+    the offset is known.
+
+    Only occupied cells within a short distance of the axis are considered, so
+    room partitions and furniture several metres away cannot drag the estimate.
+    """
+    data = np.asarray(grid.data)
+    rows, columns = np.indices(data.shape, dtype=np.float64)
+    dx = grid.origin_x + (columns + 0.5) * grid.resolution - float(gate_center[0])
+    dy = grid.origin_y + (rows + 0.5) * grid.resolution - float(gate_center[1])
+    cosine, sine = math.cos(float(forward_yaw)), math.sin(float(forward_yaw))
+    along = dx * cosine + dy * sine
+    lateral = -dx * sine + dy * cosine
+    in_search = (
+        (along >= 0.0)
+        & (along <= float(forward_depth))
+        & (np.abs(lateral) <= float(lateral_half_width))
+    )
+    near_limit = max(
+        1.60 * float(corridor_half_width),
+        float(corridor_half_width) + 1.90,
+    )
+    walls = []
+    for sign in (1.0, -1.0):
+        signed = sign * lateral
+        evidence = (
+            (data >= 50)
+            & in_search
+            & (signed > 0.0)
+            & (signed <= near_limit)
+        )
+        if np.count_nonzero(evidence) >= int(minimum_cells):
+            walls.append(float(np.median(signed[evidence])))
+        else:
+            walls.append(None)
+    return walls[0], walls[1]
+
+
 def topology_state_for_new_target(current_state: Optional[str]) -> str:
     """Keep room-entry proof when selecting another target in that room."""
     if current_state in ("EXPLORING", "RETURNING", "COMPLETE", "BLOCKED"):
