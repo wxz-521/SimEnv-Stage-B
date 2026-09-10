@@ -105,6 +105,10 @@ class RoomPortal:
     along: float
     lateral: float
     width: float = 0.0
+    # Distance from the corridor axis to the wall this doorway was measured
+    # against.  ``lateral`` is the nominal side offset; this records what the
+    # raw map actually showed, which is what the entry and return tests need.
+    measured_wall: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,41 @@ class PortalStation:
     along: float
     left: RoomPortal
     right: RoomPortal
+
+
+def opposite_room_portal(
+    source: RoomPortal,
+    portals: "Sequence[RoomPortal]" = (),
+    station_tolerance: float = 2.5,
+) -> RoomPortal:
+    """Return the observed opposite door, or mirror the stable source gate.
+
+    Door observations on opposite sides may land in adjacent 0.5 m ID bins as
+    the map is refined.  Match by physical station first; the synthetic form
+    is only a cached topological gate and retains the measured door width.
+    """
+    opposite_side = "R" if source.side == "L" else "L"
+    candidates = [item for item in portals if item.side == opposite_side]
+    if candidates:
+        nearest = min(candidates, key=lambda item: abs(item.along - source.along))
+        if abs(float(nearest.along) - float(source.along)) <= float(station_tolerance):
+            return nearest
+    try:
+        prefix, side, stable_bin = str(source.topology_id).rsplit("_", 2)
+    except ValueError:
+        prefix, side, stable_bin = "ROOM", source.side, str(
+            int(round(float(source.along) / 0.5))
+        )
+    if side not in ("L", "R"):
+        prefix = str(source.topology_id)
+        stable_bin = str(int(round(float(source.along) / 0.5)))
+    return RoomPortal(
+        "{}_{}_{}".format(prefix, opposite_side, stable_bin),
+        opposite_side,
+        float(source.along),
+        -float(source.lateral),
+        float(source.width),
+    )
 
 
 def pair_room_portals(
@@ -491,7 +530,7 @@ def detect_room_portals(
     minimum_along: float = 0.0,
     portal_prefix: str = "ROOM",
     max_portal_width: float = 2.4,
-    minimum_jamb_support: float = 0.55,
+    minimum_jamb_support: float = 0.0,
     passage_depth: float = 0.70,
 ) -> Tuple[RoomPortal, ...]:
     """Find persistent side openings from the occupancy map.
@@ -516,17 +555,47 @@ def detect_room_portals(
     )
     bin_count = max(1, int(math.ceil(float(forward_depth) / grid.resolution)))
     portals = []
-    # The wall-crossing band is kept narrow to reject ordinary room interior
-    # cells.  A 0.12 m band tolerates one or two SLAM cells of wall jitter.
+    # Search just outside the corridor edge.  The portal grid is the raw map,
+    # so this band follows the observed wall instead of the inflated nav map.
     # A width-only gap is not a doorway: furniture edges and mapping holes can
     # have the same apparent width.  A real room door must remain a gap in a
     # *continuous parent wall*, with occupied jamb evidence immediately before
     # and after the opening and a short free passage on the room side.
-    jamb_length = 0.65
+    jamb_length = 0.30
     jamb_support = float(minimum_jamb_support)
-    wall_band = 0.22
+    measured_walls = {}
     for side, sign in (("L", 1.0), ("R", -1.0)):
         signed = sign * lateral
+        # The corridor axis is anchored to the robot's initial pose and can
+        # therefore sit off the physical centreline.  Estimate each wall from
+        # raw occupied cells so the doorway band follows the observed wall.
+        wall_band = 0.22
+        # Only the corridor's own wall may define the doorway band.  Room
+        # partitions and furniture sit several metres further out; taking a
+        # median over the whole lateral search window let them dominate the
+        # estimate (a furnished rear pair drifted from the true 1.15 m to
+        # 4.25 m), which pushed the doorway band off the opening entirely.
+        wall_near_limit = max(
+            1.60 * float(corridor_half_width),
+            float(corridor_half_width) + 1.90,
+        )
+        wall_evidence = (
+            (data >= 50)
+            & in_search
+            & (signed > 0.0)
+            & (signed <= wall_near_limit)
+        )
+        measured_wall = None
+        if np.count_nonzero(wall_evidence) >= 20:
+            measured_wall = float(np.median(signed[wall_evidence]))
+        if measured_wall is None:
+            measured_wall = float(corridor_half_width)
+        # A spurious deep-wall median must not drag the band into a room.
+        measured_wall = max(
+            0.55 * float(corridor_half_width),
+            min(1.60 * float(corridor_half_width), measured_wall),
+        )
+        measured_walls[side] = float(measured_wall)
         # A free cell on the corridor edge is not evidence of a doorway.  The
         # previous implementation used this whole band directly; because the
         # real wall inner face is at ``corridor_half_width``, ordinary corridor
@@ -537,15 +606,15 @@ def detect_room_portals(
         crossing = (
             known_free
             & in_search
-            & (signed >= float(corridor_half_width) - 0.12)
-            & (signed <= float(corridor_half_width) + 0.12)
+            & (signed >= measured_wall + 0.05)
+            & (signed <= measured_wall + 0.60)
         )
         indices = np.floor(along[crossing] / grid.resolution).astype(np.int64)
         indices = indices[(indices >= 0) & (indices < bin_count)]
         free_counts = np.bincount(indices, minlength=bin_count)
         wall_cells = (data >= 50) & in_search & (
-            signed >= float(corridor_half_width) - wall_band
-        ) & (signed <= float(corridor_half_width) + wall_band)
+            signed >= measured_wall - wall_band
+        ) & (signed <= measured_wall + 0.60)
         wall_indices_array = np.floor(
             along[wall_cells] / grid.resolution
         ).astype(np.int64)
@@ -565,7 +634,9 @@ def detect_room_portals(
         candidates = []
         for group in groups:
             width = (group[-1] - group[0] + 1) * grid.resolution
-            if 0.40 <= width <= float(max_portal_width):
+            # Width is a hard physical sanity range; the remaining decision
+            # is a low-threshold score so sparse maps do not veto a doorway.
+            if 0.30 <= width <= float(max_portal_width):
                 start, end = int(group[0]), int(group[-1])
                 support_bins = max(2, int(math.ceil(jamb_length / grid.resolution)))
                 left_expected = range(start - support_bins, start)
@@ -579,17 +650,35 @@ def detect_room_portals(
                 # is still occupied/unknown, while keeping the test permissive
                 # enough for a partially mapped genuine doorway.
                 centre_along = (start + end + 1) * 0.5 * grid.resolution
-                inner_samples = np.linspace(0.20, passage_depth, 4)
+                # Validate the room side, not the apparent doorway width.
+                # A small rectangular sample is robust to inflation clipping
+                # the threshold itself while still rejecting isolated map
+                # holes that do not open into a room.
                 passage = []
-                for depth in inner_samples:
-                    point_x = float(gate_center[0]) + cosine * centre_along - sine * sign * (float(corridor_half_width) + depth)
-                    point_y = float(gate_center[1]) + sine * centre_along + cosine * sign * (float(corridor_half_width) + depth)
-                    row, column = grid.world_to_cell(point_x, point_y)
-                    if 0 <= row < data.shape[0] and 0 <= column < data.shape[1]:
-                        passage.append(int(data[row, column]) == 0)
-                if len(passage) < 3 or sum(passage) < 3:
+                unknown_passage = 0
+                for depth in (0.20, 0.45, 0.70, 0.95):
+                    for lateral_offset in (-0.45, 0.0, 0.45):
+                        point_x = float(gate_center[0]) + cosine * centre_along - sine * sign * (measured_wall + depth) + cosine * lateral_offset
+                        point_y = float(gate_center[1]) + sine * centre_along + cosine * sign * (measured_wall + depth) + sine * lateral_offset
+                        row, column = grid.world_to_cell(point_x, point_y)
+                        if 0 <= row < data.shape[0] and 0 <= column < data.shape[1]:
+                            value = int(data[row, column])
+                            passage.append(value == 0)
+                            unknown_passage += int(value < 0)
+                known_cells = len(passage)
+                free_cells = sum(passage)
+                # Interior mapping is intentionally not a hard condition:
+                # laser structure and repeated observations decide validity.
+                if known_cells < 1 and unknown_passage < 1:
                     continue
-                candidates.append((centre_along, width))
+                width_score = 25.0 if width <= 1.8 else 15.0 + 10.0 * (2.4 - width) / 0.6
+                depth_score = min(30.0, 30.0 * (free_cells + 0.5 * unknown_passage) / 12.0)
+                map_score = 15.0 if min(left_ratio, right_ratio) > 0.0 else 10.0
+                # Passage/depth is supporting evidence only.  A clear raw-map
+                # wall break with valid physical width is actionable even
+                # before the room interior has been fully mapped.
+                if width_score + depth_score + map_score >= 30.0:
+                    candidates.append((centre_along, width))
         for value, width in candidates:
             # Quantise the observed longitudinal coordinate rather than using
             # the list index.  As SLAM reveals a nearer doorway, list indices
@@ -601,8 +690,9 @@ def detect_room_portals(
                     "{}_{}_{}".format(portal_prefix, side, stable_bin),
                     side,
                     float(value),
-                    sign * float(corridor_half_width),
+                    float(sign * measured_wall),
                     float(width),
+                    measured_wall=float(measured_wall),
                 )
             )
     return tuple(portals)
@@ -625,7 +715,7 @@ def detect_lobby_portals(
     # Reverse the gate tangent so the lobby becomes a normal positive-along
     # search window; this preserves the established non-negative binning and
     # all room-door evidence checks.
-    return detect_room_portals(
+    portals = detect_room_portals(
         grid,
         gate_center,
         forward_yaw + math.pi,
@@ -633,10 +723,44 @@ def detect_lobby_portals(
         lateral_half_width=lateral_half_width,
         corridor_half_width=corridor_half_width,
         portal_prefix="LOBBY",
-        max_portal_width=4.5,
-        minimum_jamb_support=0.25,
+        max_portal_width=6.0,
+        minimum_jamb_support=0.0,
         passage_depth=0.45,
     )
+    if portals:
+        return portals
+
+    # Elevator lobbies often appear as a square/half-open free region rather
+    # than a thin doorway. Use connected map geometry as a permissive fallback.
+    data = np.asarray(grid.data)
+    rows, columns = np.indices(data.shape, dtype=np.float64)
+    yaw = float(forward_yaw) + math.pi
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    dx = grid.origin_x + (columns + 0.5) * grid.resolution - float(gate_center[0])
+    dy = grid.origin_y + (rows + 0.5) * grid.resolution - float(gate_center[1])
+    along = dx * cosine + dy * sine
+    lateral = -dx * sine + dy * cosine
+    free = ((data == 0) & (along >= 0.0) & (along <= float(lobby_depth)) &
+            (np.abs(lateral) <= float(lateral_half_width)))
+    components, count = label(free, structure=np.ones((3, 3), dtype=np.int8))
+    candidates = []
+    min_cells = max(20, int(round(1.2 / grid.resolution)) ** 2)
+    for component_id in range(1, int(count) + 1):
+        component = components == component_id
+        if int(np.count_nonzero(component)) < min_cells:
+            continue
+        span_along = float(np.ptp(along[component]))
+        span_lateral = float(np.ptp(lateral[component]))
+        if span_along < 0.8 or span_lateral < 0.8:
+            continue
+        candidates.append((float(np.mean(along[component])),
+                           float(np.mean(lateral[component])), span_lateral))
+    if not candidates:
+        return ()
+    along_value, centre_lateral, span_lateral = sorted(candidates, key=lambda item: item[0])[0]
+    side = "L" if centre_lateral >= 0.0 else "R"
+    return (RoomPortal("LOBBY_{}_{}".format(side, int(round(along_value / 0.5))),
+                       side, along_value, centre_lateral, span_lateral),)
 
 
 def topology_id_for_point(
@@ -730,7 +854,12 @@ def topology_region_mask(
     cosine, sine = math.cos(float(forward_yaw)), math.sin(float(forward_yaw))
     along = dx * cosine + dy * sine
     lateral = -dx * sine + dy * cosine
-    side_ok = lateral >= float(corridor_half_width) + 0.35 if portal.side == "L" else lateral <= -float(corridor_half_width) - 0.35
+    # The navigation clearance test below already removes cells too close to
+    # the wall.  Keeping an additional 0.35 m topological offset here can
+    # erase a narrow doorway/room entirely, especially after SLAM wall drift.
+    # Start just outside the corridor and let the occupancy-distance mask
+    # decide which cells are physically usable.
+    side_ok = lateral >= float(corridor_half_width) + 0.05 if portal.side == "L" else lateral <= -float(corridor_half_width) - 0.05
     result[:] = (
         (along >= lower)
         & (along <= upper)
@@ -848,13 +977,13 @@ class TaskCoveragePlanner:
         forward_depth: float = 25.0,
         lateral_half_width: float = 9.5,
         corridor_half_width: float = 1.1,
-        navigation_clearance: float = 0.20,
-        preferred_clearance: float = 0.32,
+        navigation_clearance: float = 0.30,
+        preferred_clearance: float = 0.42,
         clearance_cost_weight: float = 1.4,
         turn_cost_weight: float = 0.10,
         far_room_first: bool = False,
         minimum_room_stations: int = 2,
-        front_station_search_limit: float = 10.0,
+        front_station_search_limit: float = 35.0,
         virtual_gate_half_width: Optional[float] = None,
         virtual_gate_depth: float = 0.30,
     ):
@@ -1282,6 +1411,17 @@ class TaskCoveragePlanner:
             current = (int(previous[0]), int(previous[1]))
         cells.append(seed)
         cells.reverse()
+        # The reachable predecessor chain is optimized for discovery, not
+        # for a smooth vehicle trajectory.  Collapse every safe line-of-sight
+        # run before exposing the path to the controller.
+        occupied = np.asarray(grid.data) >= 50
+        clearance = distance_transform_edt(~occupied) * grid.resolution
+        safe = (
+            (np.asarray(grid.data) >= 0)
+            & (np.asarray(grid.data) < 50)
+            & (clearance >= self.navigation_clearance)
+        )
+        cells = list(self._shortcut_cells(safe, cells))
         stride = max(1, int(math.ceil(0.45 / grid.resolution)))
         sampled = [cells[0]]
         previous_direction = None
@@ -1429,7 +1569,7 @@ class TaskCoveragePlanner:
         completed_front_sides: Iterable[str] = (),
         portal_prefix: str = "ROOM",
         force_laser_unknown: bool = False,
-        relaxed_portal_detection: bool = False,
+        portal_grid: Optional[GridView] = None,
     ) -> CoveragePlan:
         empty = CoverageSnapshot(0.0, 0.0, 0.0, 0, 0, 0)
         if grid is None or robot_pose is None or gate_center is None or forward_yaw is None:
@@ -1525,7 +1665,6 @@ class TaskCoveragePlanner:
         visited = tuple((float(item[0]), float(item[1])) for item in visited_targets)
 
         diagnostics = {
-            "forced_laser_frontier": bool(force_laser_unknown),
             "assignment_portal_count": 0,
             "room_task_cells": 0,
             "room_eligible_cells": 0,
@@ -1543,7 +1682,7 @@ class TaskCoveragePlanner:
 
         targets = []
         live_portals = detect_room_portals(
-            grid,
+            portal_grid if portal_grid is not None else grid,
             gate_center,
             forward_yaw,
             extent.forward_limit,
@@ -1551,19 +1690,6 @@ class TaskCoveragePlanner:
             self.corridor_half_width,
             portal_prefix=str(portal_prefix),
         )
-        if not live_portals and relaxed_portal_detection:
-            live_portals = detect_room_portals(
-                grid,
-                gate_center,
-                forward_yaw,
-                extent.forward_limit,
-                self.lateral_half_width,
-                self.corridor_half_width,
-                portal_prefix=str(portal_prefix),
-                minimum_jamb_support=0.30,
-                passage_depth=0.45,
-            )
-            diagnostics["relaxed_portal_detection"] = bool(live_portals)
         confirmed = set(str(item) for item in confirmed_topologies)
         # Once a doorway has accumulated temporal confirmation, a sparse map
         # update must not erase the only route to an unvisited room.  Live
@@ -1571,7 +1697,10 @@ class TaskCoveragePlanner:
         # stable topology and is still gated by ``confirmed_topologies``.
         portals_by_id = {portal.topology_id: portal for portal in live_portals}
         for portal in remembered_portals:
-            if portal.topology_id in confirmed:
+            if (
+                portal.topology_id in confirmed
+                or portal.topology_id == str(topology_lock)
+            ):
                 portals_by_id.setdefault(portal.topology_id, portal)
         portals = sorted(
             portals_by_id.values(), key=lambda item: (item.side, item.along)
@@ -1587,12 +1716,16 @@ class TaskCoveragePlanner:
             if portal.topology_id in confirmed
             or portal.topology_id == str(topology_lock)
         ]
-        station_tolerance = 1.25
+        # Opposing door observations can shift longitudinally while the
+        # robot exits and re-centres.  Keep the station bounded, but wide
+        # enough to admit a directly facing door instead of forcing another
+        # full sweep when its raw-map coordinate drifts by a metre or two.
+        station_tolerance = 2.5
         rear_minimum_separation = 10.0
         front_candidates = [
             portal
             for portal in confirmed_portals
-            if 2.0 <= float(portal.along) <= self.front_station_search_limit
+            if 0.5 <= float(portal.along) <= self.front_station_search_limit
         ]
         front_station_along = (
             float(front_station_along_hint)
@@ -1610,6 +1743,28 @@ class TaskCoveragePlanner:
             and abs(float(portal.along) - front_station_along) <= station_tolerance
         ]
         completed = set(str(item) for item in completed_topologies)
+        completed_portals = [
+            portal
+            for portal in remembered_portals
+            if portal.topology_id in completed
+        ]
+
+        def portal_is_complete(portal):
+            # Portal IDs are 0.5 m longitudinal bins and can change as SLAM
+            # refines a wall.  Completion belongs to the physical doorway,
+            # not to that transient bin label.  Opposite sides remain
+            # distinct, and real stations are separated by much more than
+            # this existing station tolerance.
+            return bool(
+                portal.topology_id in completed
+                or any(
+                    old.side == portal.side
+                    and abs(float(old.along) - float(portal.along))
+                    <= station_tolerance
+                    for old in completed_portals
+                )
+            )
+
         front_sides = {portal.side for portal in front_station_portals}
         completed_sides = {
             str(side) for side in completed_front_sides if str(side) in ("L", "R")
@@ -1629,35 +1784,16 @@ class TaskCoveragePlanner:
                 for portal in confirmed_portals
                 if portal.topology_id == str(topology_lock)
             ]
-        elif rear_rooms_unlocked and front_station_along is not None:
-            rear_candidates = [
-                portal
-                for portal in confirmed_portals
-                if float(portal.along)
-                >= front_station_along + rear_minimum_separation
-            ]
-            rear_station_along = (
-                min(float(portal.along) for portal in rear_candidates)
-                if rear_candidates
-                else None
-            )
-            assignment_portals = [
-                portal
-                for portal in rear_candidates
-                if rear_station_along is not None
-                and abs(float(portal.along) - rear_station_along)
-                <= station_tolerance
-            ]
-        elif not front_rooms_complete:
-            assignment_portals = [
-                portal
-                for portal in front_station_portals
-                if portal.side not in completed_sides
-            ]
         else:
-            # Both front rooms are complete, but the live node has not yet
-            # finished the controlled corridor transit toward the rear pair.
-            assignment_portals = []
+            # Corridor exploration owns the whole currently reachable area.
+            # Any confirmed room doorway may receive a target; room locking
+            # and the existing entry/return lifecycle keep each room isolated.
+            # This removes the brittle front/rear station pairing requirement.
+            assignment_portals = [
+                portal for portal in confirmed_portals
+                if float(portal.along) >= 0.5
+                and not portal_is_complete(portal)
+            ]
         diagnostics["assignment_portal_count"] = len(assignment_portals)
         if topology_lock:
             room_region = topology_region_mask(
@@ -1838,12 +1974,15 @@ class TaskCoveragePlanner:
             )
             for item in targets
         ]
-        # A stable sphere hint always gets camera review.  Other candidates use
-        # nearest-frontier ordering; combined gain only breaks near ties.
+        # Corridor and room topologies have deliberately different sensor
+        # objectives.  In CORRIDOR, lidar frontiers discover the large shared
+        # structure and may cross a newly observed narrow passage.  Once such
+        # a target is dispatched the node locks its portal, after which only
+        # camera frontiers in that room are eligible.  A lidar target remains
+        # a room-local fallback only when no camera viewpoint exists yet.
         priority = {"SPHERE_REVIEW": 0, "CAMERA_FRONTIER": 1, "LASER_FRONTIER": 1}
-        has_room_targets = any(item.topology_id != "CORRIDOR" for item in targets)
         camera_targets = [item for item in targets if item.kind == "CAMERA_FRONTIER"]
-        if snapshot.camera < float(camera_target) and camera_targets:
+        if topology_lock and snapshot.camera < float(camera_target) and camera_targets:
             # When RGB-D still has a deficit, suppress ordinary lidar-only
             # frontiers *only in a topology that already has a usable camera
             # viewpoint*.  If a room has no camera frontier yet, retaining one
@@ -1859,7 +1998,7 @@ class TaskCoveragePlanner:
         active_station_topologies = {
             portal.topology_id
             for portal in assignment_portals
-            if portal.topology_id not in completed
+            if not portal_is_complete(portal)
         }
         portal_order = {
             portal.topology_id: index
@@ -1867,32 +2006,55 @@ class TaskCoveragePlanner:
                 sorted(assignment_portals, key=lambda item: (item.along, item.side))
             )
         }
-        # The corridor is now a transport topology only.  It may be used by
-        # A* as a connector, but it never owns a camera/laser frontier and
-        # therefore cannot make the robot turn around to scan the corridor.
         if topology_lock:
             before_topology_filter = len(targets)
-            targets = [
+            locked_targets = [
                 item for item in targets
                 if item.topology_id == str(topology_lock)
+            ]
+            locked_camera = [
+                item for item in locked_targets
+                if item.kind in ("CAMERA_FRONTIER", "SPHERE_REVIEW")
+            ]
+            targets = locked_camera or [
+                item for item in locked_targets if item.kind == "LASER_FRONTIER"
             ]
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
         else:
+            before_topology_filter = len(targets)
             targets = [
                 item for item in targets
-                if item.topology_id in active_station_topologies
+                if item.kind == "LASER_FRONTIER"
+                and (
+                    item.topology_id == "CORRIDOR"
+                    or item.topology_id in active_station_topologies
+                )
             ]
-        targets.sort(
-            key=lambda item: (
-                priority[item.kind],
-                portal_order.get(item.topology_id, len(portal_order)),
-                item.path_length,
-                -item.combined_gain,
-                -item.min_clearance,
+            diagnostics["candidate_reject_counts"]["wrong_topology"] += (
+                before_topology_filter - len(targets)
             )
-        )
+        if topology_lock:
+            targets.sort(
+                key=lambda item: (
+                    priority[item.kind],
+                    item.path_length,
+                    -item.combined_gain,
+                    -item.min_clearance,
+                )
+            )
+        else:
+            # The corridor is one large topology: choose the nearest lidar
+            # frontier regardless of which room interval it happens to lie
+            # in.  Portal order would recreate a hidden front/rear schedule.
+            targets.sort(
+                key=lambda item: (
+                    item.path_length,
+                    -item.laser_gain,
+                    -item.min_clearance,
+                )
+            )
         # Keep the complete map-derived pool for diagnostics, even though
         # dispatch/ranking below uses only confirmed topology ownership.
         diagnostic_topologies = tuple(
@@ -1968,7 +2130,17 @@ class TaskCoveragePlanner:
             # map update or starts an explicit return-to-corridor route.
             targets = locked
         elif completed:
-            targets = [item for item in targets if item.topology_id not in completed]
+            active_ids = {
+                portal.topology_id
+                for portal in assignment_portals
+                if not portal_is_complete(portal)
+            }
+            targets = [
+                item
+                for item in targets
+                if item.topology_id == "CORRIDOR"
+                or item.topology_id in active_ids
+            ]
         # Candidate discovery/ranking remains nearest-frontier based.  Only
         # the selected executable route is replaced with orientation-aware
         # A* plus a collision-checked line-of-sight shortcut.

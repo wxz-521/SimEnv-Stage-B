@@ -2,6 +2,7 @@
 """Monitor the coverage-based Stage B explorer through public ROS topics."""
 
 import argparse
+import copy
 import json
 import math
 import time
@@ -19,6 +20,7 @@ def main():
     parser.add_argument("--wait-floor-transition", action="store_true")
     parser.add_argument("--transition-only", action="store_true")
     parser.add_argument("--two-floor", action="store_true")
+    parser.add_argument("--three-floor", action="store_true")
     args = parser.parse_args(rospy.myargv()[1:])
     rospy.init_node("stage_b_coverage_monitor", anonymous=True)
 
@@ -32,6 +34,8 @@ def main():
     localization_states = []
     elevator_states = []
     latest_elevator = {}
+    active_floor_index = 0
+    floor_results = {}
     last_pose = None
     max_pose_step = 0.0
     rtf_samples = []
@@ -43,24 +47,33 @@ def main():
         except (TypeError, ValueError):
             return
         state = latest.get("state")
+        if state == "FLOOR_COMPLETE":
+            floor_results[active_floor_index] = copy.deepcopy(latest)
         if state and (not state_sequence or state_sequence[-1] != state):
             state_sequence.append(state)
 
     def complete_callback(message):
         nonlocal floor_complete
         floor_complete = bool(message.data)
+        if message.data:
+            floor_results[active_floor_index] = copy.deepcopy(latest)
 
     def transition_callback(message):
         nonlocal floor_transition_complete
         floor_transition_complete = bool(message.data)
 
     def elevator_status_callback(message):
-        nonlocal latest_elevator
+        nonlocal latest_elevator, active_floor_index
         try:
             latest_elevator = json.loads(message.data)
         except (TypeError, ValueError):
             return
         state = latest_elevator.get("state")
+        if state == "FLOOR_1_READY":
+            try:
+                active_floor_index = int(latest_elevator.get("floor_index", 0))
+            except (TypeError, ValueError):
+                pass
         if state and (not elevator_states or elevator_states[-1] != state):
             elevator_states.append(state)
 
@@ -128,7 +141,7 @@ def main():
         time.sleep(0.02)
     start = rospy.Time.now()
     def task_complete():
-        if args.two_floor:
+        if args.two_floor or args.three_floor:
             return two_floor_mission_complete
         return floor_transition_complete if args.wait_floor_transition else floor_complete
 
@@ -150,11 +163,29 @@ def main():
             for topology_id in completed_topologies
         )
     )
-    if args.two_floor:
+    def floor_rooms_ok(floor_index):
+        status = floor_results.get(floor_index, {})
+        expected = int(status.get("expected_rooms_per_floor", 4))
+        completed = set(status.get("completed_topologies", []))
+        states = status.get("topology_states", {})
+        return bool(
+            len(completed) >= expected
+            and all(states.get(item, {}).get("state") == "COMPLETE" for item in completed)
+        )
+
+    if args.three_floor:
         passed = bool(
             mission_fault is None
             and two_floor_mission_complete
-            and latest.get("floor_index") == 1
+            and latest_elevator.get("floor_index") == 2
+            and all(floor_rooms_ok(index) for index in (0, 1, 2))
+            and max_pose_step < 1.0
+        )
+    elif args.two_floor:
+        passed = bool(
+            mission_fault is None
+            and two_floor_mission_complete
+            and latest_elevator.get("floor_index") == 1
             and completed_rooms_ok
             and latest_elevator.get("floor1_complete", False)
             and max_pose_step < 1.0
@@ -206,6 +237,7 @@ def main():
         "targets_reached": int(latest.get("targets_reached", 0)),
         "latest_status": latest,
         "latest_elevator_status": latest_elevator,
+        "floor_results": {str(key): value for key, value in floor_results.items()},
         "transition_only": args.transition_only,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

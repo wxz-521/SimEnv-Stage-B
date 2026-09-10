@@ -18,15 +18,29 @@ RUNTIME_ROOT="${STAGE_B_RUNTIME_ROOT:-$WORKSPACE_DIR}"
 SCENE_DIR="$RUNTIME_ROOT/generated_building"
 RESULTS_DIR="$RUNTIME_ROOT/results"
 RUNTIME_LOG_DIR="$RUNTIME_ROOT/logs"
-if [ -n "${SIMENV_DEVEL_DIR:-}" ]; then
-  DEVEL_DIR="$SIMENV_DEVEL_DIR"
-elif [ -f "$WORKSPACE_DIR/devel/setup.bash" ] \
-  && [ -x "$WORKSPACE_DIR/devel/lib/unitree_guide/junior_ctrl" ] \
-  && [ -f "$WORKSPACE_DIR/devel/lib/libunitree_legged_control.so" ]; then
-  DEVEL_DIR="$WORKSPACE_DIR/devel"
-else
-  DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+CANONICAL_DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+DEVEL_DIR="${SIMENV_DEVEL_DIR:-$CANONICAL_DEVEL_DIR}"
+if [ "$(readlink -f "$DEVEL_DIR")" != "$(readlink -f "$CANONICAL_DEVEL_DIR")" ]; then
+  echo "Refusing non-canonical build: SIMENV_DEVEL_DIR must be $CANONICAL_DEVEL_DIR" >&2
+  exit 3
 fi
+
+strip_legacy_workspace_env() {
+  local variable value part cleaned
+  for variable in CMAKE_PREFIX_PATH ROS_PACKAGE_PATH LD_LIBRARY_PATH PYTHONPATH PKG_CONFIG_PATH; do
+    value="${!variable:-}"
+    cleaned=""
+    IFS=':' read -r -a parts <<< "$value"
+    for part in "${parts[@]}"; do
+      case "$part" in
+        "$WORKSPACE_DIR/devel"|"$WORKSPACE_DIR/devel/"*) continue ;;
+      esac
+      cleaned="${cleaned:+$cleaned:}$part"
+    done
+    printf -v "$variable" '%s' "$cleaned"
+    export "$variable"
+  done
+}
 STAGE_B_POLICY_PATH="${UNITREE_POLICY_PATH:-$WORKSPACE_DIR/src/unitree_guide/logs/policy_act_inference_stair.pt}"
 STAGE_B_PLANE_POLICY_PATH="${UNITREE_PLANE_POLICY_PATH:-$WORKSPACE_DIR/src/unitree_guide/logs/policy_act_inference_plane.pt}"
 LOCK_FILE="$RUNTIME_ROOT/.stage_b_runner.lock"
@@ -38,7 +52,10 @@ CORE_PID=""
 AUTO_PID=""
 NAV_PID=""
 BEHAVIOR_PID=""
+SUPPORT_PID=""
+SUPERVISOR_PID=""
 MONITOR_PID=""
+TELEMETRY_PID=""
 RVIZ_PID=""
 
 mkdir -p "$RUNTIME_ROOT" "$SCENE_DIR" "$RESULTS_DIR" "$RUNTIME_LOG_DIR"
@@ -67,11 +84,25 @@ fi
 if [ "${STAGE_B_ALLOW_CONCURRENT:-0}" != "1" ]; then
   for process_pattern in \
     'gzserver' 'gzclient' 'fastlio_mapping' 'junior_ctrl' \
+    'lio_localization_bridge_node.py' 'lio_occupancy_node.py' \
+    'lio_health_monitor_node.py' 'map_views_node.py' \
     'coverage_explorer_node.py' 'danger_detector_node.py' \
+    'elevator_transition_node.py' 'two_floor_explorer_supervisor.py' \
     'stage_b_localization.launch' 'stage_b_behavior.launch' 'rviz -d' \
-    'monitor_stage_b_coverage.py'; do
-    if pgrep -af "$process_pattern" 2>/dev/null | awk -v self="$$" \
-      '$1 != self { found = 1 } END { exit !found }'; then
+    'monitor_stage_b_coverage.py' 'record_stage_b_telemetry.py'; do
+    found_process=0
+    while read -r process_pid process_args; do
+      [ -n "$process_pid" ] || continue
+      [ "$process_pid" = "$$" ] && continue
+      case "$process_args" in
+        *run_stage_b_seed.sh*|*"bash -lc"*|*"pgrep -af"*|rg\ *|*/rg\ *)
+          continue
+          ;;
+      esac
+      found_process=1
+      break
+    done < <(ps -eo pid=,args= | rg "$process_pattern" || true)
+    if [ "$found_process" -eq 1 ]; then
       echo "an existing process matching $process_pattern is running in the SimEnv container; refusing to share Gazebo/ROS resources." >&2
       exit 3
     fi
@@ -107,25 +138,89 @@ terminate_process_group() {
   wait "$pid" 2>/dev/null || true
 }
 
+cleanup_orphaned_stage_b_nodes() {
+  # A forced stop can orphan roslaunch children after the parent shell exits.
+  # Match their ROS_MASTER_URI before terminating them so parallel, unrelated
+  # ROS instances are never disturbed.
+  local pid env_master process_args
+  while read -r pid process_args; do
+    [ -n "$pid" ] || continue
+    [ "$pid" = "$$" ] && continue
+    case "$process_args" in
+      *stage_b_localization.launch*|*lio_localization_bridge_node.py*|*lio_occupancy_node.py*|*lio_health_monitor_node.py*|*map_views_node.py*|*fastlio_mapping*|*coverage_explorer_node.py*|*danger_detector_node.py*|*elevator_transition_node.py*|*two_floor_explorer_supervisor.py*)
+        env_master=""
+        if [ -r "/proc/$pid/environ" ]; then
+          env_master=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^ROS_MASTER_URI=//p' | head -n 1)
+        fi
+        if [ "$env_master" = "http://127.0.0.1:$ROS_PORT" ] || [ "$env_master" = "http://127.0.0.1:$ROS_PORT/" ]; then
+          kill -TERM "$pid" 2>/dev/null || true
+        fi
+        ;;
+    esac
+  done < <(ps -eo pid=,args=)
+  sleep 1
+  while read -r pid process_args; do
+    [ -n "$pid" ] || continue
+    case "$process_args" in
+      *stage_b_localization.launch*|*lio_localization_bridge_node.py*|*lio_occupancy_node.py*|*lio_health_monitor_node.py*|*map_views_node.py*|*fastlio_mapping*|*coverage_explorer_node.py*|*danger_detector_node.py*|*elevator_transition_node.py*|*two_floor_explorer_supervisor.py*)
+        env_master=""
+        if [ -r "/proc/$pid/environ" ]; then
+          env_master=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^ROS_MASTER_URI=//p' | head -n 1)
+        fi
+        if [ "$env_master" = "http://127.0.0.1:$ROS_PORT" ] || [ "$env_master" = "http://127.0.0.1:$ROS_PORT/" ]; then
+          kill -KILL "$pid" 2>/dev/null || true
+        fi
+        ;;
+    esac
+  done < <(ps -eo pid=,args=)
+}
+
 cleanup() {
   set +e
   terminate_process_group "$MONITOR_PID"
+  terminate_process_group "$TELEMETRY_PID"
   terminate_process_group "$RVIZ_PID"
   terminate_process_group "$BEHAVIOR_PID"
+  terminate_process_group "$SUPERVISOR_PID"
+  terminate_process_group "$SUPPORT_PID"
   terminate_process_group "$NAV_PID"
   terminate_process_group "$AUTO_PID"
   terminate_process_group "$CORE_PID"
+  cleanup_orphaned_stage_b_nodes
 }
 trap cleanup EXIT INT TERM
 
 mkdir -p "$RUN_DIR"
+strip_legacy_workspace_env
 source /opt/ros/noetic/setup.bash
 source "$DEVEL_DIR/setup.bash"
 export ROS_PACKAGE_PATH="$WORKSPACE_DIR/src:${ROS_PACKAGE_PATH:-}"
 export PYTHONPATH="$WORKSPACE_DIR/src/simnav/scripts:${PYTHONPATH:-}"
+if [ "$(rospack find simnav 2>/dev/null)" != "$WORKSPACE_DIR/src/simnav" ]; then
+  echo "simnav resolves outside this workspace; refusing stale ROS environment" >&2
+  exit 3
+fi
+if ! rg -q "^CATKIN_DEVEL_PREFIX:PATH=${CANONICAL_DEVEL_DIR}$" \
+  "$WORKSPACE_DIR/.simenv_build/build/CMakeCache.txt"; then
+  echo "canonical build cache does not target .simenv_build/devel; rebuild required" >&2
+  exit 3
+fi
 export ROS_MASTER_URI="http://127.0.0.1:$ROS_PORT"
 export GAZEBO_MASTER_URI="http://127.0.0.1:$GAZEBO_PORT"
+for required_node in lio_localization_bridge_node.py lio_occupancy_node.py map_views_node.py; do
+  node_path="$WORKSPACE_DIR/src/simnav/scripts/$required_node"
+  if [ ! -x "$node_path" ]; then
+    echo "required ROS node is not executable: $node_path" >&2
+    echo "restore it with: chmod +x $node_path" >&2
+    exit 3
+  fi
+done
 echo "Stage B resource guard: ROS_PORT=$ROS_PORT GAZEBO_PORT=$GAZEBO_PORT CPU_LIST=${CPU_LIST:-inherited}" > "$RUN_DIR/resource_guard.log"
+echo "Stage B canonical devel: $CANONICAL_DEVEL_DIR" >> "$RUN_DIR/resource_guard.log"
+echo "Stage B simnav package: $(rospack find simnav)" >> "$RUN_DIR/resource_guard.log"
+if [ -f config/stage_b_entry_frozen.sha256 ]; then
+  echo "Stage B frozen manifest: $(sha256sum config/stage_b_entry_frozen.sha256 | cut -d' ' -f1)" >> "$RUN_DIR/resource_guard.log"
+fi
 echo "Stage B locomotion policy: $STAGE_B_POLICY_PATH" >> "$RUN_DIR/resource_guard.log"
 echo "Stage B plane policy: $STAGE_B_PLANE_POLICY_PATH" >> "$RUN_DIR/resource_guard.log"
 echo "Stage B room combined coverage target: $ROOM_COMBINED_COVERAGE_TARGET" >> "$RUN_DIR/resource_guard.log"
@@ -154,6 +249,16 @@ wait_for_topic() {
   local timeout_seconds="$2"
   local deadline=$((SECONDS + timeout_seconds))
   while [ "$SECONDS" -lt "$deadline" ]; do
+    # junior_ctrl may pause Gazebo once during its own initialization, after
+    # auto.sh's scheduled unpause has already run.  Keep startup moving until
+    # the simulated clock and sensor/controller topics are alive.
+    if [ "$topic" = "/clock" ] \
+      || [ "$topic" = "/trunk_imu" ] \
+      || [ "$topic" = "/a1_gazebo/FR_hip_controller/state" ]; then
+      if rosservice list 2>/dev/null | rg -qx '/gazebo/unpause_physics'; then
+        timeout 2s rosservice call /gazebo/unpause_physics >/dev/null 2>&1 || true
+      fi
+    fi
     if timeout 2s rostopic echo -n 1 "$topic" >/dev/null 2>&1; then
       return 0
     fi
@@ -195,6 +300,8 @@ rm -f "$RESULTS_DIR/detected_danger.json" \
 
 cd "$WORKSPACE_DIR"
 GUI="$GAZEBO_GUI" PAUSED=true AUTO_UNPAUSE=1 AUTO_UNPAUSE_DELAY=6 \
+  ROBOT_X="${STAGE_B_ROBOT_X:-0.0}" ROBOT_Y="${STAGE_B_ROBOT_Y:--3.2}" \
+  ROBOT_Z="${STAGE_B_ROBOT_Z:-0.6}" ROBOT_YAW="${STAGE_B_ROBOT_YAW:-1.5708}" \
   UNITREE_POLICY_PATH="$STAGE_B_POLICY_PATH" \
   UNITREE_PLANE_POLICY_PATH="$STAGE_B_PLANE_POLICY_PATH" \
   SIMENV_DEVEL_DIR="$DEVEL_DIR" \
@@ -233,21 +340,52 @@ fi
 python3 team_scripts/activate_stage_b_controller.py --mode rl \
   > "$RUN_DIR/controller_rl.log" 2>&1
 
-if [ "$RUN_MODE" != "coverage" ] && [ "$RUN_MODE" != "full" ] && [ "$RUN_MODE" != "two_floor" ]; then
+if [ "$RUN_MODE" != "coverage" ] && [ "$RUN_MODE" != "full" ] && [ "$RUN_MODE" != "two_floor" ] && [ "$RUN_MODE" != "three_floor" ]; then
   echo "unsupported active run mode: $RUN_MODE (door modes are archived)" >&2
   exit 2
 fi
 
-"${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_behavior.launch \
-  result_dir:="$RESULTS_DIR" \
-  room_combined_coverage_target:="$ROOM_COMBINED_COVERAGE_TARGET" \
-  motion_speed:="$MOTION_SPEED" \
-  enable_elevator_transition:="$([ "$RUN_MODE" = "full" ] || [ "$RUN_MODE" = "two_floor" ] || [ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
-  elevator_transition_only:="$([ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
-  enable_coverage_explorer:="$([ "$TRANSITION_ONLY" = "1" ] && echo false || echo true)" \
-  gate_override:="${GATE_OVERRIDE:-[]}" \
-  > "$RUN_DIR/behavior.log" 2>&1 &
-BEHAVIOR_PID=$!
+if [ "$RUN_MODE" = "two_floor" ] || [ "$RUN_MODE" = "three_floor" ]; then
+  FROZEN_CHECKSUM_FILE="config/stage_b_floor0_frozen.sha256"
+  if [ -f config/stage_b_entry_frozen.sha256 ]; then
+    FROZEN_CHECKSUM_FILE="config/stage_b_entry_frozen.sha256"
+  fi
+  if ! sha256sum -c "$FROZEN_CHECKSUM_FILE" >/dev/null; then
+    # The same runtime is used for single- and multi-floor runs.  A source
+    # change must not silently turn the floor count into a separate test
+    # species; retain the manifest as an audit signal and continue.
+    echo "warning: frozen floor-0 manifest differs from the current explorer; continuing with the selected runtime floor count" >&2
+    echo "Stage B frozen manifest warning: current explorer differs from $FROZEN_CHECKSUM_FILE" >> "$RUN_DIR/resource_guard.log"
+  fi
+fi
+
+if [ "$RUN_MODE" = "two_floor" ] || [ "$RUN_MODE" = "three_floor" ] || [ "$TRANSITION_ONLY" = "1" ]; then
+  "${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_two_floor_support.launch \
+    result_dir:="$RESULTS_DIR" \
+    max_floor:="$([ "$RUN_MODE" = "three_floor" ] && echo 2 || echo 1)" \
+    start_immediately:="$([ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
+    finish_at_top_floor:=false \
+    gate_override:="${GATE_OVERRIDE:-[]}" \
+    > "$RUN_DIR/two_floor_support.log" 2>&1 &
+  SUPPORT_PID=$!
+  wait_for_topic /simnav/elevator_status 60
+  if [ "$TRANSITION_ONLY" != "1" ]; then
+    "${RUN_PREFIX[@]}" setsid python3 team_scripts/two_floor_explorer_supervisor.py \
+      > "$RUN_DIR/two_floor_supervisor.log" 2>&1 &
+    SUPERVISOR_PID=$!
+  fi
+else
+  "${RUN_PREFIX[@]}" setsid roslaunch simnav stage_b_behavior.launch \
+    result_dir:="$RESULTS_DIR" \
+    room_combined_coverage_target:="$ROOM_COMBINED_COVERAGE_TARGET" \
+    motion_speed:="$MOTION_SPEED" \
+    enable_elevator_transition:="$([ "$RUN_MODE" = "full" ] || [ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
+    elevator_transition_only:="$([ "$TRANSITION_ONLY" = "1" ] && echo true || echo false)" \
+    enable_coverage_explorer:="$([ "$TRANSITION_ONLY" = "1" ] && echo false || echo true)" \
+    gate_override:="${GATE_OVERRIDE:-[]}" \
+    > "$RUN_DIR/behavior.log" 2>&1 &
+  BEHAVIOR_PID=$!
+fi
 if [ "$TRANSITION_ONLY" = "1" ]; then
   wait_for_topic /simnav/elevator_status 60
 else
@@ -258,8 +396,11 @@ MONITOR_ARGS=(--sim-timeout "$SIM_TIMEOUT" --seed "$SEED_VALUE")
 if [ "$RUN_MODE" = "full" ]; then
   MONITOR_ARGS+=(--wait-floor-transition)
 fi
-if [ "$RUN_MODE" = "two_floor" ]; then
+if [ "$RUN_MODE" = "two_floor" ] || [ "$RUN_MODE" = "three_floor" ]; then
   MONITOR_ARGS+=(--two-floor)
+fi
+if [ "$RUN_MODE" = "three_floor" ]; then
+  MONITOR_ARGS+=(--three-floor)
 fi
 if [ "$TRANSITION_ONLY" = "1" ]; then
   MONITOR_ARGS+=(--wait-floor-transition --transition-only)
@@ -269,6 +410,14 @@ fi
   > "$RUN_DIR/result.json" 2> "$RUN_DIR/monitor.stderr" &
 MONITOR_PID=$!
 
+# High-rate base telemetry.  The coverage monitor only reports topology at
+# 1 Hz and the explorer stops at floor completion, so a fall during the
+# elevator transition otherwise leaves no diagnostic trace at all.
+"${RUN_PREFIX[@]}" python3 team_scripts/record_stage_b_telemetry.py \
+  --out-dir "$RUN_DIR" \
+  > "$RUN_DIR/telemetry.log" 2>&1 &
+TELEMETRY_PID=$!
+
 set +e
 wait "$MONITOR_PID"
 MONITOR_EXIT=$?
@@ -277,7 +426,7 @@ set -e
 save_visual_artifacts
 copy_artifacts
 
-if [ "$RUN_MODE" != "two_floor" ]; then
+if [ "$RUN_MODE" != "two_floor" ] && [ "$RUN_MODE" != "three_floor" ]; then
   set +e
   python3 team_scripts/evaluate_stage_b_danger.py \
     --truth "$RUN_DIR/danger_truth.json" \

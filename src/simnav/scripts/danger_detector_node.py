@@ -207,17 +207,21 @@ class DangerDetectorNode:
             )
             with self.lock:
                 scope_type = self.camera_scope_type
+                scope_id = self.camera_room_id
+            desired_scope_type = "room" if topology_lock else "corridor"
+            desired_scope_id = str(topology_lock or "corridor")
             if corridor_ready and not self.camera_exploration_active:
                 self._activate_camera_scope(
-                    str(topology_lock or "room_pending"), "room"
+                    desired_scope_id, desired_scope_type
                 )
             elif (
                 corridor_ready
-                and scope_type == "room"
-                and topology_lock
-                and self.camera_room_id != str(topology_lock)
+                and (
+                    scope_type != desired_scope_type
+                    or scope_id != desired_scope_id
+                )
             ):
-                self._activate_camera_scope(str(topology_lock), "room")
+                self._activate_camera_scope(desired_scope_id, desired_scope_type)
             elif not corridor_ready and self.camera_exploration_active:
                 # The sensor remains published by Gazebo, but image conversion,
                 # red detection and coverage ray casting are disabled while the

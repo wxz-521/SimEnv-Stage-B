@@ -2,14 +2,11 @@
 set -euo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -n "${SIMENV_DEVEL_DIR:-}" ]; then
-  DEVEL_DIR="$SIMENV_DEVEL_DIR"
-elif [ -f "$WORKSPACE_DIR/devel/setup.bash" ] \
-  && [ -x "$WORKSPACE_DIR/devel/lib/unitree_guide/junior_ctrl" ] \
-  && [ -f "$WORKSPACE_DIR/devel/lib/libunitree_legged_control.so" ]; then
-  DEVEL_DIR="$WORKSPACE_DIR/devel"
-else
-  DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+CANONICAL_DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+DEVEL_DIR="${SIMENV_DEVEL_DIR:-$CANONICAL_DEVEL_DIR}"
+if [ "$(readlink -f "$DEVEL_DIR")" != "$(readlink -f "$CANONICAL_DEVEL_DIR")" ]; then
+  echo "Refusing non-canonical build: SIMENV_DEVEL_DIR must be $CANONICAL_DEVEL_DIR" >&2
+  exit 3
 fi
 TEST_PORT="${SIMNAV_TEST_PORT:-11321}"
 RESULT_FILE="${SIMNAV_TEST_RESULT:-/tmp/simnav_stage_b_result.json}"

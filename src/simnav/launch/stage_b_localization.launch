@@ -46,11 +46,11 @@
     <param name="team_scene_info" value="$(arg team_scene_info)"/>
   </node>
   <node pkg="simnav" type="lio_occupancy_node.py" name="lio_occupancy" output="screen">
-    <!-- Avoid a second 4x decimation of the already downsampled registered scan. -->
-    <param name="point_stride" value="1"/>
+    <!-- Keep the occupancy callback responsive at the map's 0.10 m resolution. -->
+    <param name="point_stride" value="4"/>
   </node>
   <node pkg="simnav" type="map_views_node.py" name="map_views" output="screen">
     <param name="mapping_frequency" value="2.0"/>
-    <param name="small_gap_kernel" value="5"/>
+    <param name="small_gap_kernel" value="1"/>
   </node>
 </launch>

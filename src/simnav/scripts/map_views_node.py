@@ -10,6 +10,7 @@ import numpy as np
 import rospy
 from geometry_msgs.msg import PolygonStamped
 from nav_msgs.msg import OccupancyGrid
+from std_msgs.msg import String
 
 
 def binary_dilate(mask, radius):
@@ -54,6 +55,9 @@ class MapViewsNode:
             self.kernel += 1
         self.lock = threading.Lock()
         self.latest_map = None
+        self.floor_zero_map = None
+        self.structure_prior = None
+        self.floor_index = 0
         self.gate = None
         self.defer_zones = []
         self.navigation_pub = rospy.Publisher("/navigation_map", OccupancyGrid, queue_size=1, latch=True)
@@ -61,12 +65,52 @@ class MapViewsNode:
         rospy.Subscriber("/map", OccupancyGrid, self._map_callback, queue_size=1)
         rospy.Subscriber("/simnav/entrance_gate", PolygonStamped, self._gate_callback, queue_size=1)
         rospy.Subscriber("/simnav/defer_zone", PolygonStamped, self._defer_callback, queue_size=10)
+        rospy.Subscriber(
+            "/simnav/floor_exploration_context", String,
+            self._floor_context_callback, queue_size=1,
+        )
         self.timer = rospy.Timer(rospy.Duration(1.0 / self.frequency), self._publish)
         rospy.on_shutdown(self.timer.shutdown)
 
     def _map_callback(self, message):
         with self.lock:
             self.latest_map = message
+            if self.floor_index == 0:
+                self.floor_zero_map = copy.deepcopy(message)
+
+    def _floor_context_callback(self, message):
+        try:
+            import json
+            floor_index = int(json.loads(message.data)["floor_index"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if floor_index <= 0:
+            return
+        with self.lock:
+            self.floor_index = floor_index
+            if self.floor_zero_map is not None:
+                source = np.asarray(self.floor_zero_map.data, dtype=np.int16).reshape(
+                    self.floor_zero_map.info.height, self.floor_zero_map.info.width
+                )
+                # Structural walls form long connected components.  Reject
+                # small components so floor-0 furniture and hazards are not
+                # copied into the upper-floor navigation prior.
+                occupied = (source >= 50).astype(np.uint8)
+                count, labels, stats, _centres = cv2.connectedComponentsWithStats(
+                    occupied, connectivity=8
+                )
+                structure = np.full(source.shape, -1, dtype=np.int16)
+                for label_index in range(1, count):
+                    width = int(stats[label_index, cv2.CC_STAT_WIDTH])
+                    height = int(stats[label_index, cv2.CC_STAT_HEIGHT])
+                    area = int(stats[label_index, cv2.CC_STAT_AREA])
+                    long_span = max(width, height) * float(self.floor_zero_map.info.resolution)
+                    if area >= 100 and long_span >= 6.0:
+                        structure[labels == label_index] = 100
+                structure[source == 0] = 0
+                self.structure_prior = structure
+            self.gate = None
+            self.defer_zones = []
 
     def _gate_callback(self, message):
         with self.lock:
@@ -85,6 +129,17 @@ class MapViewsNode:
             source = self.latest_map
             gate = self.gate
             zones = list(self.defer_zones)
+            structure_prior = None if self.structure_prior is None else self.structure_prior.copy()
+            floor_index = self.floor_index
+        if floor_index > 0 and structure_prior is not None:
+            live = np.asarray(source.data, dtype=np.int16).reshape(
+                source.info.height, source.info.width
+            )
+            merged = structure_prior
+            observed = live >= 0
+            merged[observed] = live[observed]
+            source = copy.deepcopy(source)
+            source.data = merged.astype(np.int8).reshape(-1).tolist()
         try:
             self.navigation_pub.publish(source)
         except rospy.ROSException:

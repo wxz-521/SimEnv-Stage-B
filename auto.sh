@@ -3,17 +3,29 @@ set -euo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$WORKSPACE_DIR"
-if [ -n "${SIMENV_DEVEL_DIR:-}" ]; then
-  SIMENV_DEVEL_DIR="$SIMENV_DEVEL_DIR"
-elif [ -f "$WORKSPACE_DIR/devel/setup.bash" ] \
-  && [ -x "$WORKSPACE_DIR/devel/lib/unitree_guide/junior_ctrl" ] \
-  && [ -f "$WORKSPACE_DIR/devel/lib/libunitree_legged_control.so" ]; then
-  SIMENV_DEVEL_DIR="$WORKSPACE_DIR/devel"
-elif [ -f "$WORKSPACE_DIR/.simenv_build/devel/setup.bash" ]; then
-  SIMENV_DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
-else
-  SIMENV_DEVEL_DIR="$WORKSPACE_DIR/devel"
+CANONICAL_DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+SIMENV_DEVEL_DIR="${SIMENV_DEVEL_DIR:-$CANONICAL_DEVEL_DIR}"
+if [ "$(readlink -f "$SIMENV_DEVEL_DIR")" != "$(readlink -f "$CANONICAL_DEVEL_DIR")" ]; then
+  echo "Refusing non-canonical build: SIMENV_DEVEL_DIR must be $CANONICAL_DEVEL_DIR" >&2
+  exit 3
 fi
+
+strip_legacy_workspace_env() {
+  local variable value part cleaned
+  for variable in CMAKE_PREFIX_PATH ROS_PACKAGE_PATH LD_LIBRARY_PATH PYTHONPATH PKG_CONFIG_PATH; do
+    value="${!variable:-}"
+    cleaned=""
+    IFS=':' read -r -a parts <<< "$value"
+    for part in "${parts[@]}"; do
+      case "$part" in
+        "$WORKSPACE_DIR/devel"|"$WORKSPACE_DIR/devel/"*) continue ;;
+      esac
+      cleaned="${cleaned:+$cleaned:}$part"
+    done
+    printf -v "$variable" '%s' "$cleaned"
+    export "$variable"
+  done
+}
 
 as_ros_bool() {
   case "$1" in
@@ -58,6 +70,7 @@ UNITREE_CTRL_DT="${UNITREE_CTRL_DT:-0.002}"
 UNITREE_LOG_WAIT_WARNINGS="$(as_ros_bool "${UNITREE_LOG_WAIT_WARNINGS:-0}")"
 ROBOT_SPAWN_TIMEOUT="${ROBOT_SPAWN_TIMEOUT:-120}"
 CONTROLLER_SPAWNER_TIMEOUT="${CONTROLLER_SPAWNER_TIMEOUT:-120}"
+CONTROLLER_STARTUP_TIMEOUT="${CONTROLLER_STARTUP_TIMEOUT:-120}"
 GAZEBO_PHYSICS_MAX_STEP_SIZE="${GAZEBO_PHYSICS_MAX_STEP_SIZE:-0.002}"
 GAZEBO_PHYSICS_REAL_TIME_UPDATE_RATE="${GAZEBO_PHYSICS_REAL_TIME_UPDATE_RATE:-500}"
 GAZEBO_PHYSICS_ODE_ITERS="${GAZEBO_PHYSICS_ODE_ITERS:-40}"
@@ -66,6 +79,17 @@ ROBOT_X="${ROBOT_X:-0.0}"
 ROBOT_Y="${ROBOT_Y:--3.2}"
 ROBOT_Z="${ROBOT_Z:-0.6}"
 ROBOT_YAW="${ROBOT_YAW:-1.5708}"
+LAUNCH_PID=""
+CONTROLLER_PID=""
+
+cleanup_controller_process() {
+  if [ -n "$CONTROLLER_PID" ] && kill -0 "$CONTROLLER_PID" 2>/dev/null; then
+    kill -TERM "$CONTROLLER_PID" 2>/dev/null || true
+    wait "$CONTROLLER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_controller_process EXIT
+trap 'exit 143' INT TERM
 
 schedule_unpause_physics() {
   if [ "$AUTO_UNPAUSE" != "true" ]; then
@@ -110,9 +134,73 @@ wait_for_robot_spawn() {
   exit 1
 }
 
+wait_for_controller_manager() {
+  local timeout="$CONTROLLER_STARTUP_TIMEOUT"
+  local deadline=$((SECONDS + timeout))
+  local service="/a1_gazebo/controller_manager/load_controller"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then
+      echo "Gazebo launch exited while waiting for controller manager." >&2
+      tail -n 100 "$RUNTIME_LOG_DIR/competition_gazebo.log" >&2
+      exit 1
+    fi
+    if rosservice list 2>/dev/null | grep -q "^${service}$"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "Timed out waiting for $service." >&2
+  rosservice list 2>/dev/null | grep -E 'controller_manager|gazebo' >&2 || true
+  exit 1
+}
+
+start_controllers_after_spawn() {
+  # The ros_control plugin may not advertise its services until Gazebo has
+  # advanced at least one physics tick. The robot is already spawned here, so
+  # briefly unpausing is safe and removes the startup ordering race.
+  if rosservice list 2>/dev/null | grep -q '^/gazebo/unpause_physics$'; then
+    rosservice call /gazebo/unpause_physics >/dev/null 2>&1 || true
+  fi
+  wait_for_controller_manager
+  echo "Controller manager is ready; loading A1 controllers."
+  local controller_log="$RUNTIME_LOG_DIR/controller_spawner.log"
+  local controllers=(
+    joint_state_controller
+    FL_hip_controller FL_thigh_controller FL_calf_controller
+    FR_hip_controller FR_thigh_controller FR_calf_controller
+    RL_hip_controller RL_thigh_controller RL_calf_controller
+    RR_hip_controller RR_thigh_controller RR_calf_controller
+  )
+  : > "$controller_log"
+  printf 'Loading controllers: %s\n' "${controllers[*]}" >> "$controller_log"
+  # Keep one spawner process alive for the complete controller set. The
+  # spawner unloads controllers when it exits.
+  rosrun controller_manager spawner \
+    --namespace /a1_gazebo --timeout "$CONTROLLER_SPAWNER_TIMEOUT" "${controllers[@]}" \
+    >> "$controller_log" 2>&1 &
+  CONTROLLER_PID=$!
+  local deadline=$((SECONDS + CONTROLLER_SPAWNER_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if ! kill -0 "$CONTROLLER_PID" 2>/dev/null; then
+      echo "Controller spawner exited before all controllers became ready." >&2
+      tail -n 100 "$controller_log" >&2
+      exit 1
+    fi
+    if timeout 3s rostopic echo -n 1 /a1_gazebo/FR_hip_controller/state >/dev/null 2>&1; then
+      echo "All A1 controllers loaded." >> "$controller_log"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "Timed out waiting for A1 controllers to become ready." >&2
+  tail -n 100 "$controller_log" >&2
+  exit 1
+}
+
 echo "Starting a scoped SimEnv process group; no global ROS/Gazebo cleanup is performed."
 
 echo "Sourcing ROS environment..."
+strip_legacy_workspace_env
 source /opt/ros/noetic/setup.bash
 if [ ! -f "$SIMENV_DEVEL_DIR/setup.bash" ]; then
   echo "Missing $SIMENV_DEVEL_DIR/setup.bash. Build the workspace before starting the simulation." >&2
@@ -207,6 +295,7 @@ echo "Launching Gazebo, Unitree A1 model, sensors, and ROS interfaces..."
 roslaunch unitree_guide multi_floor_gazeboSim.launch \
   gui:="$GUI" \
   paused:="$PAUSED" \
+  start_controller_spawner:=false \
   user_debug:=False \
   rname:=a1 \
   robot_x:="$ROBOT_X" \
@@ -230,6 +319,7 @@ roslaunch unitree_guide multi_floor_gazeboSim.launch \
 LAUNCH_PID=$!
 echo "$LAUNCH_PID" > "$RUNTIME_LOG_DIR/competition_gazebo.pid"
 wait_for_robot_spawn
+start_controllers_after_spawn
 
 if [ "$START_BUILDING_CONTROL" = "1" ]; then
   echo "Starting building door/elevator control service..."

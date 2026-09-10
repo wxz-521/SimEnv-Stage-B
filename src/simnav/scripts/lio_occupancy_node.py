@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a lightweight 2D occupancy map from FAST-LIO registered scans."""
 
+import json
 import threading
 
 import cv2
@@ -11,6 +12,7 @@ import tf.transformations as transformations
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import String
 
 
 def trace_ray_free(grid, start, end):
@@ -51,7 +53,23 @@ class LioOccupancyNode:
             self._cloud_callback,
             queue_size=1,
         )
+        rospy.Subscriber(
+            "/simnav/floor_exploration_context", String,
+            self._floor_context_callback, queue_size=1,
+        )
         self.timer = rospy.Timer(rospy.Duration(0.5), self._publish)
+
+    def _floor_context_callback(self, message):
+        try:
+            floor_index = int(json.loads(message.data)["floor_index"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if floor_index <= 0:
+            return
+        with self.lock:
+            self.grid.fill(-1)
+            self.stamp = rospy.Time.now()
+        rospy.loginfo("Cleared live occupancy cache for floor %d", floor_index)
 
     def _cell(self, x, y):
         return (

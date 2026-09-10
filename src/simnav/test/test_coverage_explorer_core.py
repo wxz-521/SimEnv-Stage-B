@@ -15,6 +15,7 @@ from coverage_explorer_core import (
     coverage_snapshot,
     detect_room_portals,
     infer_task_extent,
+    opposite_room_portal,
     pair_room_portals,
     portal_return_along_offsets,
     task_region_mask,
@@ -61,10 +62,42 @@ def synthetic_floor(include_second_opening=True, include_end_wall=True):
 
 
 class CoverageMathTest(unittest.TestCase):
+    def test_opposite_room_uses_nearby_observation_or_mirrors_source(self):
+        source = RoomPortal("F1_ROOM_R_15", "R", 7.6, -1.1, 0.9)
+        observed = RoomPortal("F1_ROOM_L_16", "L", 7.9, 1.1, 1.0)
+        self.assertEqual(
+            opposite_room_portal(source, (observed,)).topology_id,
+            observed.topology_id,
+        )
+        mirrored = opposite_room_portal(source, ())
+        self.assertEqual(mirrored.topology_id, "F1_ROOM_L_15")
+        self.assertEqual(mirrored.side, "L")
+        self.assertAlmostEqual(mirrored.along, source.along)
+        self.assertAlmostEqual(mirrored.lateral, -source.lateral)
+        self.assertAlmostEqual(mirrored.width, source.width)
+
     def test_lobby_portal_detector_uses_separate_prefix(self):
         grid = synthetic_floor()
         portals = detect_lobby_portals(grid, (0.0, 7.0), math.pi / 2.0)
         self.assertTrue(all(item.topology_id.startswith("LOBBY_") for item in portals))
+
+    def test_room_portals_follow_measured_walls_when_gate_axis_is_offset(self):
+        grid = synthetic_floor(include_second_opening=False)
+        portals = detect_room_portals(
+            grid,
+            gate_center=(0.0, 0.4),
+            forward_yaw=0.0,
+            forward_depth=12.0,
+            lateral_half_width=9.5,
+            corridor_half_width=1.1,
+        )
+        near = [item for item in portals if abs(item.along - 3.5) < 1.0]
+        self.assertEqual({item.side for item in near}, {"L", "R"})
+        left = next(item for item in near if item.side == "L")
+        right = next(item for item in near if item.side == "R")
+        self.assertLess(left.lateral, 1.1)
+        self.assertLess(right.lateral, -1.1)
+
     def test_room_combined_coverage_uses_five_percent_lidar_by_default(self):
         self.assertAlmostEqual(weighted_linear_coverage(1.0, 0.84, 0.90), 0.856)
         self.assertAlmostEqual(weighted_linear_coverage(1.0, 0.70, 0.90), 0.73)
@@ -262,8 +295,14 @@ class PlannerTest(unittest.TestCase):
         }
         self.assertNotIn("ROOM_L_20", actionable_ids)
 
-    def test_topology_lock_filters_candidates_without_changing_global_pool(self):
+    def test_corridor_uses_lidar_and_room_lock_uses_camera(self):
         grid = synthetic_floor()
+        row0, column0 = grid.world_to_cell(-3.4, 5.0)
+        row1, column1 = grid.world_to_cell(10.5, 9.2)
+        grid.data[
+            min(row0, row1) : max(row0, row1) + 1,
+            min(column0, column1) : max(column0, column1) + 1,
+        ] = -1
         planner = TaskCoveragePlanner(
             robot_radius=0.0,
             safety_margin=0.0,
@@ -273,11 +312,12 @@ class PlannerTest(unittest.TestCase):
         )
         kwargs = dict(
             grid=grid,
-            robot_pose=(0.0, 0.0, 0.0),
+            robot_pose=(0.5, 0.0, 0.0),
             gate_center=(0.0, 0.0),
             forward_yaw=0.0,
             camera_seen=np.zeros(grid.data.shape, dtype=bool),
             camera_target=1.0,
+            minimum_forward=0.45,
             confirmed_topologies=[item.topology_id for item in detect_room_portals(
                 grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1
             )],
@@ -286,8 +326,10 @@ class PlannerTest(unittest.TestCase):
         locked = planner.plan(**kwargs, topology_lock="ROOM_L_7")
         self.assertTrue(all_targets.targets)
         self.assertTrue(locked.targets)
+        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in all_targets.targets))
+        self.assertEqual(all_targets.target.topology_id, "ROOM_L_7")
         self.assertTrue(all(item.topology_id == "ROOM_L_7" for item in locked.targets))
-        self.assertIn("ROOM_R_7", all_targets.candidate_topologies)
+        self.assertTrue(all(item.kind == "CAMERA_FRONTIER" for item in locked.targets))
         self.assertEqual(locked.diagnostics["assignment_portal_count"], 1)
         self.assertGreater(locked.diagnostics["room_task_cells"], 0)
         self.assertGreater(locked.diagnostics["room_eligible_cells"], 0)
@@ -296,7 +338,7 @@ class PlannerTest(unittest.TestCase):
         )
         self.assertIn("candidate_reject_counts", locked.diagnostics)
 
-    def test_near_station_is_completed_before_far_pair(self):
+    def test_corridor_has_no_hidden_front_rear_station_schedule(self):
         grid = synthetic_floor()
         portals = detect_room_portals(grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1)
         planner = TaskCoveragePlanner(
@@ -316,10 +358,7 @@ class PlannerTest(unittest.TestCase):
             camera_target=1.0,
             confirmed_topologies=[item.topology_id for item in portals],
         )
-        self.assertIsNotNone(plan.target)
-        self.assertIn(plan.target.topology_id, ("ROOM_L_7", "ROOM_R_7"))
-        self.assertFalse(any(item.topology_id == "ROOM_L_35" for item in plan.targets))
-        self.assertFalse(any(item.topology_id == "ROOM_R_35" for item in plan.targets))
+        self.assertEqual(len(plan.actionable_portals), 4)
 
         left_complete = planner.plan(
             grid,
@@ -331,7 +370,7 @@ class PlannerTest(unittest.TestCase):
             confirmed_topologies=[item.topology_id for item in portals],
             completed_topologies=("ROOM_L_7",),
         )
-        self.assertEqual(left_complete.target.topology_id, "ROOM_R_7")
+        self.assertEqual(len(left_complete.actionable_portals), 3)
 
         near_complete = planner.plan(
             grid,
@@ -343,7 +382,7 @@ class PlannerTest(unittest.TestCase):
             confirmed_topologies=[item.topology_id for item in portals],
             completed_topologies=("ROOM_L_7", "ROOM_R_7"),
         )
-        self.assertIsNone(near_complete.target)
+        self.assertEqual(len(near_complete.actionable_portals), 2)
         self.assertTrue(near_complete.front_rooms_complete)
 
         rear_unlocked = planner.plan(
@@ -357,12 +396,19 @@ class PlannerTest(unittest.TestCase):
             completed_topologies=("ROOM_L_7", "ROOM_R_7"),
             rear_rooms_unlocked=True,
         )
-        self.assertIn(
-            rear_unlocked.target.topology_id, ("ROOM_L_35", "ROOM_R_35")
+        self.assertEqual(
+            {item.topology_id for item in rear_unlocked.actionable_portals},
+            {"ROOM_L_35", "ROOM_R_35"},
         )
 
     def test_single_confirmed_door_is_immediately_actionable(self):
         grid = synthetic_floor(include_second_opening=False)
+        row0, column0 = grid.world_to_cell(-3.4, 5.0)
+        row1, column1 = grid.world_to_cell(10.5, 9.2)
+        grid.data[
+            min(row0, row1) : max(row0, row1) + 1,
+            min(column0, column1) : max(column0, column1) + 1,
+        ] = -1
         portals = detect_room_portals(grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1)
         planner = TaskCoveragePlanner(
             robot_radius=0.0,
@@ -374,14 +420,16 @@ class PlannerTest(unittest.TestCase):
         )
         plan = planner.plan(
             grid,
-            robot_pose=(0.0, 0.0, 0.0),
+            robot_pose=(0.5, 0.0, 0.0),
             gate_center=(0.0, 0.0),
             forward_yaw=0.0,
             camera_seen=np.zeros(grid.data.shape, dtype=bool),
             camera_target=1.0,
+            minimum_forward=0.45,
             confirmed_topologies=("ROOM_L_7",),
         )
         self.assertTrue(plan.targets)
+        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in plan.targets))
         self.assertTrue(all(item.topology_id == "ROOM_L_7" for item in plan.targets))
         self.assertEqual(
             [item.topology_id for item in plan.actionable_portals],
@@ -422,8 +470,40 @@ class PlannerTest(unittest.TestCase):
         )
         self.assertEqual(plan.diagnostics["assignment_portal_count"], 1)
         self.assertTrue(plan.targets)
-        self.assertTrue(
-            all(item.topology_id == remembered.topology_id for item in plan.targets)
+        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in plan.targets))
+
+    def test_completed_physical_door_is_not_redispatched_after_id_drift(self):
+        grid = synthetic_floor()
+        live_portals = detect_room_portals(
+            grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1
+        )
+        live_left = next(
+            item for item in live_portals if item.topology_id == "ROOM_L_7"
+        )
+        completed = RoomPortal(
+            "ROOM_L_9", "L", live_left.along + 1.15, live_left.lateral, live_left.width
+        )
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0,
+            safety_margin=0.0,
+            navigation_clearance=0.05,
+            forward_depth=24.0,
+            lateral_half_width=9.5,
+        )
+        plan = planner.plan(
+            grid,
+            robot_pose=(0.0, 0.0, 0.0),
+            gate_center=(0.0, 0.0),
+            forward_yaw=0.0,
+            camera_seen=np.zeros(grid.data.shape, dtype=bool),
+            camera_target=1.0,
+            confirmed_topologies=[item.topology_id for item in live_portals],
+            completed_topologies=(completed.topology_id,),
+            remembered_portals=(completed,),
+        )
+        self.assertNotIn(
+            live_left.topology_id,
+            {item.topology_id for item in plan.actionable_portals},
         )
 
     def test_locked_remembered_portal_survives_confirmation_dropout(self):
@@ -503,6 +583,12 @@ class PlannerTest(unittest.TestCase):
 
     def test_door_entry_route_contains_corridor_and_room_staging(self):
         grid = synthetic_floor()
+        row0, column0 = grid.world_to_cell(-3.4, 5.0)
+        row1, column1 = grid.world_to_cell(10.5, 9.2)
+        grid.data[
+            min(row0, row1) : max(row0, row1) + 1,
+            min(column0, column1) : max(column0, column1) + 1,
+        ] = -1
         portals = detect_room_portals(grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1)
         planner = TaskCoveragePlanner(
             robot_radius=0.0,
@@ -513,11 +599,12 @@ class PlannerTest(unittest.TestCase):
         )
         plan = planner.plan(
             grid,
-            robot_pose=(0.0, 0.0, 0.0),
+            robot_pose=(0.5, 0.0, 0.0),
             gate_center=(0.0, 0.0),
             forward_yaw=0.0,
             camera_seen=np.zeros(grid.data.shape, dtype=bool),
             camera_target=1.0,
+            minimum_forward=0.45,
             confirmed_topologies=[item.topology_id for item in portals],
         )
         self.assertIsNotNone(plan.target)
@@ -583,7 +670,7 @@ class PlannerTest(unittest.TestCase):
         self.assertTrue(slopes)
         self.assertLess(max(slopes) - min(slopes), 0.03)
 
-    def test_corridor_transport_generates_no_exploration_frontier(self):
+    def test_corridor_generates_only_lidar_frontiers(self):
         data = np.zeros((60, 120), dtype=np.int16)
         data[:, 85:] = -1
         grid = GridView(data, 0.1, -6.0, -3.0)
@@ -603,8 +690,9 @@ class PlannerTest(unittest.TestCase):
             camera_target=0.0,
             minimum_forward=0.45,
         )
-        self.assertFalse(plan.targets)
-        self.assertEqual(plan.reason, "NO_FRONTIER")
+        self.assertTrue(plan.targets)
+        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in plan.targets))
+        self.assertEqual(plan.target.topology_id, "CORRIDOR")
 
     def test_virtual_gate_closes_only_the_entrance_slab(self):
         data = np.zeros((40, 40), dtype=np.int16)
@@ -649,6 +737,7 @@ class PlannerTest(unittest.TestCase):
             camera_seen=np.zeros(grid.data.shape, dtype=bool),
             sphere_hypotheses=({"id": "sphere_1", "center": (3.5, 3.0, 0.15)},),
             confirmed_topologies=[item.topology_id for item in portals],
+            topology_lock="ROOM_L_7",
         )
         self.assertIsNotNone(plan.target)
         self.assertEqual(plan.target.kind, "SPHERE_REVIEW")

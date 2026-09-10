@@ -29,6 +29,7 @@ if not sys.path or sys.path[0] != SCRIPT_DIRECTORY:
 from coverage_explorer_core import (
     FrontierTarget,
     GridView,
+    RoomPortal,
     TaskCoveragePlanner,
     corrected_portal_heading,
     coverage_classification,
@@ -40,6 +41,7 @@ from coverage_explorer_core import (
     normalize_angle,
     pair_room_portals,
     portal_return_along_offsets,
+    opposite_room_portal,
     topology_state_for_new_target,
     target_kind_allowed_for_topology_state,
     topology_completion_ready,
@@ -50,6 +52,7 @@ class CoverageExplorer:
     def __init__(self):
         self.lock = threading.RLock()
         self.grid = None
+        self.raw_grid = None
         self.navigation_grid = None
         self.pose = None
         self.world_pose = None
@@ -65,6 +68,18 @@ class CoverageExplorer:
         )
         self.initial_centering_start_distance = max(
             0.0, float(rospy.get_param("~initial_centering_start_distance", 10.5))
+        )
+        self.elevator_detection_start_distance = max(
+            0.0, float(rospy.get_param("~elevator_detection_start_distance", 4.0))
+        )
+        self.elevator_detection_end_distance = max(
+            self.elevator_detection_start_distance,
+            float(
+                rospy.get_param(
+                    "~elevator_detection_end_distance",
+                    self.initial_centering_start_distance,
+                )
+            ),
         )
         # The robot may continue several metres into the corridor before
         # exploration starts, but the lobby/task topology gate belongs at the
@@ -167,7 +182,7 @@ class CoverageExplorer:
                 rospy.get_param("~minimum_room_stations", 2)
             ),
             front_station_search_limit=float(
-                rospy.get_param("~front_station_search_limit", 10.0)
+                rospy.get_param("~front_station_search_limit", 35.0)
             ),
             virtual_gate_half_width=float(
                 rospy.get_param("~virtual_gate_half_width", 1.1)
@@ -251,19 +266,26 @@ class CoverageExplorer:
         self.door_search_wait_cycles = max(
             1, int(rospy.get_param("~door_search_wait_cycles", 3))
         )
+        self.door_search_enabled = bool(
+            rospy.get_param("~door_search_enabled", False)
+        )
         self.door_search_active = False
         self.door_search_step_start_along = None
         self.door_search_travel = 0.0
         self.door_search_idle_cycles = 0
         self.door_search_phase = "FRONT"
+        self.door_search_sweep_phase = None
         self.room_scope_announced = None
         self.portal_evidence = {}
         self.portal_last_seen = {}
         # Preserve the exact confirmed doorway used to enter each topology.
         # A sparse scan near/inside the room must not erase the only safe exit.
         self.topology_portals = {}
+        # Doorway ids inherited from the reference floor.  They are already
+        # confirmed map structure and must not be re-derived on this floor.
+        self.reused_portals = set()
         self.portal_confirm_cycles = max(
-            2, int(rospy.get_param("~portal_confirm_cycles", 3))
+            1, int(rospy.get_param("~portal_confirm_cycles", 1))
         )
         self.active_target_started = rospy.Time(0)
         self.active_target_last_progress = None
@@ -321,6 +343,7 @@ class CoverageExplorer:
             self._floor_context_callback, queue_size=1,
         )
 
+        rospy.Subscriber("/map", OccupancyGrid, self._raw_map_callback, queue_size=1)
         rospy.Subscriber("/exploration_map", OccupancyGrid, self._map_callback, queue_size=1)
         rospy.Subscriber(
             "/navigation_map", OccupancyGrid, self._navigation_map_callback, queue_size=1
@@ -349,6 +372,16 @@ class CoverageExplorer:
     def _map_callback(self, message):
         with self.lock:
             self.grid = GridView(
+                data=np.asarray(message.data, dtype=np.int16).reshape(message.info.height, message.info.width),
+                resolution=float(message.info.resolution),
+                origin_x=float(message.info.origin.position.x),
+                origin_y=float(message.info.origin.position.y),
+                frame_id=message.header.frame_id or "simnav_map",
+            )
+
+    def _raw_map_callback(self, message):
+        with self.lock:
+            self.raw_grid = GridView(
                 data=np.asarray(message.data, dtype=np.int16).reshape(message.info.height, message.info.width),
                 resolution=float(message.info.resolution),
                 origin_x=float(message.info.origin.position.x),
@@ -387,8 +420,41 @@ class CoverageExplorer:
                 float(message.pose.position.z),
             )
 
+    def _reused_floor_portals(self, payload):
+        """Rebuild the reference floor's doorway geometry for an upper floor.
+
+        The generated floors share one x/y topology, so an upper floor must
+        reuse the ground floor's resolved doorways instead of rediscovering
+        them.  Rediscovery re-bins the same physical door under a new id when
+        SLAM refines the wall, which splits one room into two topologies.
+        """
+        entries = payload.get("reused_topology")
+        if not isinstance(entries, list):
+            return ()
+        portals = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            topology_id = str(item.get("topology_id") or "")
+            side = str(item.get("side") or "")
+            if not topology_id or side not in ("L", "R"):
+                continue
+            try:
+                portals.append(
+                    RoomPortal(
+                        topology_id=topology_id,
+                        side=side,
+                        along=float(item["along"]),
+                        lateral=float(item.get("lateral", 0.0)),
+                        width=float(item.get("width", 0.0)),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return tuple(portals)
+
     def _floor_context_callback(self, message):
-        """Reset room topology after the elevator hands off a new floor."""
+        """Switch to a new floor, reusing the reference topology verbatim."""
         try:
             payload = json.loads(message.data)
             floor_index = int(payload["floor_index"])
@@ -398,22 +464,39 @@ class CoverageExplorer:
             return
         if floor_index <= 0:
             return
+        reused_portals = self._reused_floor_portals(payload)
         with self.lock:
             if self.floor_index == floor_index and not self.floor_complete:
                 return
             self.floor_index = floor_index
-            self.floor_laser_isolated = True
-            self.floor_prefix = "F{}_ROOM".format(floor_index)
+            # The doorways carry the reference floor's own ids.  Detection on
+            # this floor must use the same prefix, otherwise the reused
+            # geometry is treated as unconfirmed and rediscovered alongside it.
+            self.floor_prefix = "ROOM"
+            # Reused topology is already confirmed map structure, so the live
+            # lidar does not have to prove the walls from scratch again.
+            self.floor_laser_isolated = not reused_portals
             self.floor_complete = False
             self.gate_source = gate
             self.gate_world = gate_world
-            self.topology_region = "TASK_REGION"
+            self.topology_region = "CORRIDOR"
             self.completed_topologies.clear()
             self.topology_states.clear()
             self.topology_miss_cycles.clear()
             self.topology_portals.clear()
             self.portal_evidence.clear()
             self.portal_last_seen.clear()
+            self.reused_portals = set()
+            for portal in reused_portals:
+                self.topology_portals[portal.topology_id] = portal
+                # Structure inherited from the reference floor is confirmed by
+                # construction; only this floor's exploration is outstanding.
+                self.portal_evidence[portal.topology_id] = self.portal_confirm_cycles
+                self.topology_states[portal.topology_id] = {
+                    "state": "APPROACHING",
+                    "targets": 0,
+                }
+                self.reused_portals.add(portal.topology_id)
             self.topology_lock = None
             self.returning_topology = None
             self.rear_transit_active = False
@@ -438,7 +521,12 @@ class CoverageExplorer:
         self._publish_gate()
         self.complete_pub.publish(Bool(data=False))
         self._publish_status()
-        rospy.loginfo("Floor context switched to floor %d; topology prefix=%s", floor_index, self.floor_prefix)
+        rospy.loginfo(
+            "Floor context switched to floor %d; prefix=%s; reused %d topology portals",
+            floor_index,
+            self.floor_prefix,
+            len(reused_portals),
+        )
 
     def _scan_callback(self, message):
         front, left, right = [], [], []
@@ -566,10 +654,11 @@ class CoverageExplorer:
                 del self.sphere_hypotheses[hypothesis_id]
 
     def _camera_exploration_ready_locked(self):
-        # The corridor is transport-only.  RGB-D processing starts when a
-        # room door has been selected and stays active through room exploration
-        # and the explicit return to the corridor.
-        return bool(self.topology_lock is not None)
+        # Camera observations accumulate as soon as the task corridor is
+        # established.  Corridor target selection remains lidar-only, but
+        # this early observation avoids rescanning the doorway view after a
+        # room crossing.
+        return bool(self.gate_source is not None and not self.floor_complete)
 
     def _point_in_task_envelope_locked(self, point):
         if self.gate_source is None:
@@ -679,6 +768,18 @@ class CoverageExplorer:
         with self.lock:
             if self.floor_complete:
                 return
+            if (
+                self.topology_lock is not None
+                and self.topology_states.get(self.topology_lock, {}).get("state")
+                == "RETURNING"
+                and self.active_target is not None
+                and self.active_target.kind == "RETURN_TO_CORRIDOR"
+            ):
+                # The control loop owns an already validated return route and
+                # releases the topology lock as soon as the corridor boundary
+                # is crossed.  Rebuilding all room camera frontiers here can
+                # take longer than the complete return manoeuvre.
+                return
             grid, navigation_grid = self.grid, self.navigation_grid
             pose, world_pose = self.pose, self.world_pose
             gate_source = self.gate_source
@@ -712,11 +813,6 @@ class CoverageExplorer:
             )
         if grid is None or pose is None or world_pose is None:
             return
-        # Passive elevator recognition is deliberately outside the room
-        # planner.  It observes the lobby-side negative-along region after the
-        # entrance gate is established and never creates ROOM_* targets.
-        if gate_source is not None:
-            self._detect_elevator_portal(grid, gate_source, gate_world)
         if gate_source is None:
             self._publish_status()
             return
@@ -745,9 +841,7 @@ class CoverageExplorer:
             completed_front_sides=tuple(self.completed_front_sides),
             portal_prefix=self.floor_prefix,
             force_laser_unknown=self.floor_laser_isolated,
-            relaxed_portal_detection=(
-                self.door_search_travel >= 1.5
-            ),
+            portal_grid=self.raw_grid,
         )
         with self.lock:
             seen_portal_ids = set()
@@ -874,6 +968,7 @@ class CoverageExplorer:
                     and "UNASSIGNED" not in plan.target.topology_id
                 ):
                     self.topology_lock = plan.target.topology_id
+                    self.topology_region = "ROOM_APPROACHING"
                     state = self.topology_states.setdefault(
                         plan.target.topology_id,
                         {"state": "APPROACHING", "targets": 0},
@@ -886,23 +981,6 @@ class CoverageExplorer:
                     state["state"] = topology_state_for_new_target(
                         state.get("state")
                     )
-                    if self.room_scope_announced != plan.target.topology_id:
-                        self.room_entry_pub.publish(
-                            String(
-                                data=json.dumps(
-                                    {
-                                        "candidate_id": plan.target.topology_id,
-                                        "pose": [
-                                            float(self.world_pose[0]),
-                                            float(self.world_pose[1]),
-                                            float(self.world_pose[2]),
-                                        ],
-                                    },
-                                    sort_keys=True,
-                                )
-                            )
-                        )
-                        self.room_scope_announced = plan.target.topology_id
                 rospy.loginfo(
                     "COVERAGE target kind=%s topology=%s path=%.2f laser_gain=%.2f camera_gain=%.2f combined_gain=%.2f%s",
                     plan.target.kind,
@@ -1091,25 +1169,7 @@ class CoverageExplorer:
         along, lateral = self._topology_coordinates()
 
         if state.get("state") == "RETURNING":
-            in_corridor = bool(
-                lateral is not None
-                and abs(lateral) <= self.planner.corridor_half_width - 0.10
-            )
-            if in_corridor:
-                state["state"] = "COMPLETE"
-                self.completed_topologies.add(lock)
-                if lock in self.front_station_topologies:
-                    self.completed_front_sides.add(lock.split("_")[-2])
-                self.topology_lock = None
-                self.returning_topology = None
-                self.active_target = None
-                self.active_path = ()
-                self.path_index = 0
-                self.last_plan_time = rospy.Time(0)
-                rospy.loginfo(
-                    "Topology room %s complete and robot confirmed back in CORRIDOR",
-                    lock,
-                )
+            if self._finish_corridor_return_locked():
                 return True
             # RETURNING owns the motion channel exclusively.  A stale room
             # frontier can survive the exact planner cycle that changed the
@@ -1135,24 +1195,11 @@ class CoverageExplorer:
         # that the robot entered a room.  Reaching a room target in the
         # corridor does not count as entry.
         entered = state.get("state") == "EXPLORING"
-        portal = next(
-            (item for item in plan.actionable_portals if item.topology_id == str(lock)),
-            None,
-        )
-        if portal is None:
-            portal = self.topology_portals.get(str(lock))
-        if not entered and along is not None and lateral is not None and portal is not None:
-            longitudinal_ok = abs(along - portal.along) <= max(
-                1.0, 0.5 * float(portal.width) + 0.45
-            )
-            side_ok = (
-                lateral > self.planner.corridor_half_width + 0.30
-                if portal.side == "L"
-                else lateral < -self.planner.corridor_half_width - 0.30
-            )
-            entered = longitudinal_ok and side_ok
+        if not entered:
+            entered = self._mark_room_entered_locked()
         if entered:
             state["state"] = "EXPLORING"
+            self.topology_region = "ROOM_EXPLORING"
         elif state.get("state") not in ("COMPLETE", "BLOCKED"):
             state["state"] = "APPROACHING"
 
@@ -1164,6 +1211,7 @@ class CoverageExplorer:
         )
         if local_coverage_ok:
             state["state"] = "RETURNING"
+            self.topology_region = "ROOM_RETURNING"
             if self._start_corridor_return(plan, lock):
                 rospy.loginfo(
                     "Topology room %s coverage complete; returning to CORRIDOR before next room",
@@ -1194,11 +1242,24 @@ class CoverageExplorer:
         if misses < self.room_completion_miss_cycles:
             return
         if state.get("state") != "EXPLORING":
+            if state.get("station_partner") is not None:
+                # The first room of this station is already complete.  A
+                # transient sparse map must not release the station and let a
+                # distant corridor frontier bypass the opposing room.
+                state["state"] = "APPROACHING"
+                self.topology_miss_cycles[lock] = 0
+                rospy.logwarn_throttle(
+                    5.0,
+                    "Opposite room %s has no executable target yet; keeping station lock",
+                    lock,
+                )
+                return False
             # We never crossed the doorway.  This is a failed approach, not a
             # completed room.  Release the lock so another portal can be tried
             # while the blocked target remains on a short cooldown.
             state["state"] = "BLOCKED"
             self.topology_lock = None
+            self.topology_region = "CORRIDOR"
             rospy.logwarn("Topology room %s approach failed before doorway crossing", lock)
             return True
         # Never dispatch another topology while the robot is still inside this
@@ -1216,41 +1277,126 @@ class CoverageExplorer:
         )
         return False
 
-    def _update_rear_transit(self, plan):
-        """Unlock rear-door search only after both front rooms are complete."""
-        if self.topology_lock is not None or self.rear_rooms_unlocked:
+    def _mark_room_entered_locked(self):
+        """Capture the narrow doorway crossing at control-loop frequency."""
+        lock = self.topology_lock
+        if lock is None:
             return False
-        if self.rear_transit_active:
+        state = self.topology_states.get(lock, {})
+        if state.get("state") == "EXPLORING":
+            return True
+        if state.get("state") != "APPROACHING":
             return False
-        self._remember_front_portals(plan.front_station_portals)
-        remembered_sides = {
-            topology_id.split("_")[-2]
-            for topology_id in self.front_station_topologies
-            if "_ROOM_" in topology_id or topology_id.startswith("ROOM_")
-        }
-        front_complete = bool(
-            remembered_sides == {"L", "R"}
-            and self.completed_front_sides == {"L", "R"}
-        )
-        if not front_complete:
-            return False
+        portal = self.topology_portals.get(str(lock))
         along, lateral = self._topology_coordinates()
-        if along is None or lateral is None:
+        if portal is None or along is None or lateral is None:
             return False
-        if abs(lateral) > self.planner.corridor_half_width:
+        longitudinal_ok = abs(along - portal.along) <= max(
+            1.0, 0.5 * float(portal.width) + 0.45
+        )
+        # The doorway carries the wall offset the raw map actually showed.
+        # Reverting to the configured half width here reintroduces the
+        # gate-axis bias the detector no longer has: an off-centre axis made a
+        # robot that was already inside the room fail the side test, so it had
+        # to drive back to the axis and re-enter.
+        wall = (
+            float(getattr(portal, "measured_wall", 0.0))
+            or abs(float(portal.lateral))
+            or float(self.planner.corridor_half_width)
+        )
+        side_ok = (
+            lateral > wall + 0.05
+            if portal.side == "L"
+            else lateral < -wall - 0.05
+        )
+        if not (longitudinal_ok and side_ok):
             return False
-        self.rear_transit_active = True
-        self.rear_transit_start_along = float(along)
-        self.topology_region = "REAR_TRANSIT"
+        state["state"] = "EXPLORING"
+        self.topology_region = "ROOM_EXPLORING"
+        if self.world_pose is not None:
+            self.room_entry_pub.publish(
+                String(
+                    data=json.dumps(
+                        {
+                            "candidate_id": str(lock),
+                            "pose": [
+                                float(self.world_pose[0]),
+                                float(self.world_pose[1]),
+                                float(self.world_pose[2]),
+                            ],
+                        },
+                        sort_keys=True,
+                    )
+                )
+            )
+            self.room_scope_announced = str(lock)
+        rospy.loginfo("Topology room %s doorway crossing confirmed", lock)
+        return True
+
+    def _finish_corridor_return_locked(self):
+        """Finish one room and keep its station locked until its opposite."""
+        lock = self.topology_lock
+        if lock is None:
+            return False
+        state = self.topology_states.get(lock, {})
+        if state.get("state") != "RETURNING":
+            return False
+        _along, lateral = self._topology_coordinates()
+        if (
+            lateral is None
+            or abs(lateral) > self.planner.corridor_half_width - 0.10
+        ):
+            return False
+        state["state"] = "COMPLETE"
+        self.completed_topologies.add(lock)
+        if lock in self.front_station_topologies:
+            self.completed_front_sides.add(lock.split("_")[-2])
+        self.returning_topology = None
         self.active_target = None
         self.active_path = ()
         self.path_index = 0
         self.last_plan_time = rospy.Time(0)
+        partner_id = state.get("station_partner")
+        if partner_id is None:
+            source = self.topology_portals.get(str(lock))
+            if source is not None:
+                opposite = opposite_room_portal(
+                    source, tuple(self.topology_portals.values())
+                )
+                if opposite.topology_id not in self.completed_topologies:
+                    self.topology_portals.setdefault(opposite.topology_id, opposite)
+                    opposite_state = self.topology_states.setdefault(
+                        opposite.topology_id,
+                        {"state": "APPROACHING", "targets": 0},
+                    )
+                    opposite_state["state"] = "APPROACHING"
+                    opposite_state["station_partner"] = str(lock)
+                    self.topology_lock = opposite.topology_id
+                    self.topology_region = "OPPOSITE_ROOM_APPROACHING"
+                    rospy.loginfo(
+                        "Topology room %s complete; station remains locked for opposite room %s",
+                        lock,
+                        opposite.topology_id,
+                    )
+                    return True
+        self.topology_lock = None
+        self.topology_region = "CORRIDOR"
         rospy.loginfo(
-            "Both front rooms complete; starting %.2f m controlled rear transit",
-            self.rear_transit_distance,
+            "Opposing room pair complete at %s; releasing station to CORRIDOR",
+            lock,
         )
         return True
+
+    def _update_rear_transit(self, plan):
+        """Legacy fixed-distance transit is superseded by corridor frontiers.
+
+        The corridor is one unrestricted topology.  Its lidar frontier goals
+        naturally move the robot toward the rear structure, while selecting a
+        goal across a confirmed narrow passage establishes the room lock.
+        Keeping the old 12 m open-loop segment would seize control from that
+        planner and duplicate the same transition with less map awareness.
+        """
+        return False
 
     def _update_door_search(self, plan, target_active):
         """Start/cancel a bounded one-metre corridor scan segment.
@@ -1259,6 +1405,10 @@ class CoverageExplorer:
         stopped so its evidence can reach ``portal_confirm_cycles``.  Motion is
         used only after repeated completely empty portal scans.
         """
+        if not self.door_search_enabled:
+            self.door_search_active = False
+            self.door_search_sweep_phase = None
+            return False
         if (
             self.topology_lock is not None
             or self.rear_transit_active
@@ -1272,14 +1422,22 @@ class CoverageExplorer:
             self.door_search_idle_cycles = 0
             return changed
 
-        # Never creep away from an already established front station while
-        # waiting for its opposite door.  The paired door must be found from
-        # the same station, ensuring all front rooms finish before rear travel.
+        # After returning from one front room, continue the bounded corridor
+        # probe so the opposite door can be observed and admitted.  The probe
+        # is still limited to the existing front search window; rear transit
+        # remains locked until both front sides are complete.
         phase = "REAR" if self.rear_rooms_unlocked else "FRONT"
-        if phase == "FRONT" and self.front_station_along is not None:
+
+        # Once one room at a front station is complete, the opposite doorway
+        # is directly ahead of the returned robot.  The planner now creates a
+        # same-station mirrored portal and validates it with A*/local
+        # avoidance; a three-segment search would only delay that dispatch.
+        if phase == "FRONT" and self.front_station_along is not None and self.completed_front_sides:
             self.door_search_active = False
             self.door_search_step_start_along = None
             self.door_search_idle_cycles = 0
+            self.door_search_sweep_phase = None
+            self.topology_region = "FRONT_DIRECT_OPPOSITE"
             return False
 
         along, lateral = self._topology_coordinates()
@@ -1297,7 +1455,7 @@ class CoverageExplorer:
 
         # Do not move while a geometrically valid portal is accumulating its
         # temporal confirmation count.
-        if plan.observed_portals:
+        if plan.observed_portals and plan.actionable_portals:
             changed = self.door_search_active
             self.door_search_active = False
             self.door_search_step_start_along = None
@@ -1305,12 +1463,24 @@ class CoverageExplorer:
             self.topology_region = "{}_DOOR_CONFIRM".format(phase)
             return changed
 
+        # A geometric observation that is outside the current assignment
+        # band is not a reason to stop.  Keep the bounded search moving until
+        # the confirmed portal is actually admitted as an executable target.
+
         limit = (
             self.door_search_rear_limit
             if phase == "REAR"
             else self.door_search_front_limit
         )
-        if self.door_search_active or self.door_search_travel >= limit - 1e-6:
+        if self.door_search_active:
+            return False
+        if self.door_search_travel >= limit - 1e-6:
+            if self.door_search_sweep_phase is None:
+                self.door_search_sweep_phase = "LEFT"
+                self.door_search_active = True
+                self.topology_region = "{}_DOOR_SWEEP_LEFT".format(phase)
+                rospy.loginfo("%s door search complete; starting left 90-degree sweep", phase)
+                return True
             return False
         self.door_search_idle_cycles += 1
         if self.door_search_idle_cycles < self.door_search_wait_cycles:
@@ -1362,6 +1532,8 @@ class CoverageExplorer:
 
     def _control(self, _event):
         with self.lock:
+            self._mark_room_entered_locked()
+            self._finish_corridor_return_locked()
             pose = self.pose
             world_pose = self.world_pose
             front = self.front_clearance
@@ -1488,6 +1660,37 @@ class CoverageExplorer:
         self._publish_command(command)
 
     def _control_door_search(self, pose, front):
+        if self.door_search_sweep_phase is not None:
+            base = float(self.gate_source[2])
+            phase = self.door_search_sweep_phase
+            if phase == "LEFT":
+                target = normalize_angle(base + math.pi / 2.0)
+            elif phase == "RIGHT":
+                target = normalize_angle(base - math.pi / 2.0)
+            else:
+                target = normalize_angle(base)
+            error = normalize_angle(target - pose[2])
+            if abs(error) <= 0.12:
+                self._stop()
+                if phase == "LEFT":
+                    self.door_search_sweep_phase = "RIGHT"
+                    self.topology_region = "{}_DOOR_SWEEP_RIGHT".format(self.door_search_phase)
+                    rospy.loginfo("%s door left view complete; turning right 180 degrees", self.door_search_phase)
+                elif phase == "RIGHT":
+                    self.door_search_sweep_phase = "RESTORE"
+                    self.topology_region = "{}_DOOR_SWEEP_RESTORE".format(self.door_search_phase)
+                    rospy.loginfo("%s door right view complete; restoring corridor heading", self.door_search_phase)
+                else:
+                    self.door_search_sweep_phase = None
+                    self.door_search_active = False
+                    self.topology_region = "{}_DOOR_RESCAN".format(self.door_search_phase)
+                    self.last_plan_time = rospy.Time(0)
+                    rospy.loginfo("%s door sweep complete; corridor heading restored", self.door_search_phase)
+                return
+            command = Twist()
+            command.angular.z = math.copysign(min(0.45, self.turn_speed), error)
+            self._publish_command(command)
+            return
         along, _lateral = self._topology_coordinates()
         if along is None or self.door_search_step_start_along is None:
             self._stop()
@@ -1584,6 +1787,33 @@ class CoverageExplorer:
             anchor, yaw = self.forward_anchor, self.forward_yaw
             left, right = self.left_clearance, self.right_clearance
         progress = (pose[0] - anchor[0]) * math.cos(yaw) + (pose[1] - anchor[1]) * math.sin(yaw)
+        # Detect the lobby/elevator opening while traversing the entrance,
+        # rather than waiting until the 14.5 m task gate is committed.  The
+        # configured gate offset is already fixed relative to the entrance
+        # anchor, so it provides the same map frame for passive detection.
+        gate_distance = self.virtual_gate_forward_distance
+        provisional_gate = (
+            anchor[0] + gate_distance * math.cos(yaw),
+            anchor[1] + gate_distance * math.sin(yaw),
+            yaw,
+        )
+        provisional_gate_world = None
+        if self.lobby_entry_world is not None:
+            provisional_gate_world = (
+                self.lobby_entry_world[0]
+                + gate_distance * math.cos(self.world_forward_yaw),
+                self.lobby_entry_world[1]
+                + gate_distance * math.sin(self.world_forward_yaw),
+                self.world_forward_yaw,
+            )
+        if (
+            self.elevator_detection_start_distance
+            <= progress
+            < self.elevator_detection_end_distance
+        ):
+            self._detect_elevator_portal(
+                self.raw_grid, provisional_gate, provisional_gate_world
+            )
         if progress >= self.initial_forward_distance:
             self._stop()
             if not self.plane_policy_active:
@@ -1628,12 +1858,11 @@ class CoverageExplorer:
                         + gate_distance * math.sin(self.world_forward_yaw),
                         self.world_forward_yaw,
                     )
-                self.topology_region = "TASK_REGION"
+                self.topology_region = "CORRIDOR"
                 self.active_target = None
                 self.last_plan_time = rospy.Time(0)
             self._publish_gate()
             self._publish_markers()
-            self._detect_elevator_portal(self.grid, self.gate_source, self.gate_world)
             rospy.loginfo("Lobby transit complete; direct task-region exploration enabled")
             return
         target_yaw = yaw
@@ -1693,10 +1922,12 @@ class CoverageExplorer:
     def _publish_markers(self):
         with self.lock:
             grid, gate, target = self.grid, self.gate_source, self.active_target
+            portal_grid = self.raw_grid if self.raw_grid is not None else grid
             hypotheses = self._stable_spheres()
             reviewed = set(self.reviewed_hypotheses)
             topology_states = dict(self.topology_states)
             topology_lock = self.topology_lock
+            cached_portals = dict(self.topology_portals)
             portal_evidence = dict(self.portal_evidence)
         frame = grid.frame_id if grid is not None else "simnav_map"
         markers = MarkerArray()
@@ -1729,7 +1960,7 @@ class CoverageExplorer:
                 # the exact doorway set that is allowed to own exploration
                 # targets.  These markers never modify the navigation map.
                 observed_portals = detect_room_portals(
-                    grid,
+                    portal_grid,
                     gate[:2],
                     gate[2],
                     self.planner.forward_depth,
@@ -1737,14 +1968,23 @@ class CoverageExplorer:
                     self.planner.corridor_half_width,
                     portal_prefix=self.floor_prefix,
                 )
+                portals_by_id = {
+                    portal.topology_id: portal for portal in observed_portals
+                }
+                # Once a candidate owns a room lock it is a persistent
+                # topological gate.  Do not let a later sparse scan erase its
+                # RViz representation while the scheduler still enforces it.
+                portals_by_id.update(cached_portals)
                 portals = [
                     portal
-                    for portal in observed_portals
+                    for portal in portals_by_id.values()
                     if int(portal_evidence.get(portal.topology_id, 0))
                     >= self.portal_confirm_cycles
                     or portal.topology_id == topology_lock
+                    or portal.topology_id in topology_states
                 ]
-                stations = pair_room_portals(observed_portals)
+                portals.sort(key=lambda item: (item.along, item.side))
+                stations = pair_room_portals(portals)
                 paired_ids = {
                     portal.topology_id
                     for station in stations
@@ -1988,6 +2228,10 @@ class CoverageExplorer:
                         "topology_id": item.topology_id,
                         "side": item.side,
                         "along": float(item.along),
+                        "lateral": float(item.lateral),
+                        "measured_wall": float(
+                            getattr(item, "measured_wall", 0.0) or abs(float(item.lateral))
+                        ),
                         "width": float(item.width),
                         "evidence": int(self.portal_evidence.get(item.topology_id, 0)),
                         "confirmed": bool(
@@ -2000,7 +2244,6 @@ class CoverageExplorer:
                 ]
             payload = {
                 "floor_index": self.floor_index,
-                "floor_laser_isolated": self.floor_laser_isolated,
                 "state": "FLOOR_COMPLETE" if self.floor_complete else "INITIAL_FORWARD" if self.gate_source is None else "COVERAGE_EXPLORATION",
                 "topology_region": self.topology_region,
                 "initial_forward_active": self.gate_source is None,
@@ -2049,6 +2292,7 @@ class CoverageExplorer:
                     else self.door_search_front_limit
                 ),
                 "completed_topologies": sorted(self.completed_topologies),
+                "reused_topology_ids": sorted(self.reused_portals),
                 "topology_states": self.topology_states,
                 "portal_evidence": dict(self.portal_evidence),
                 "portal_confirm_cycles": self.portal_confirm_cycles,

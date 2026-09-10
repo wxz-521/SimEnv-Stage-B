@@ -48,7 +48,17 @@ void UnitreeConnection::stopRecv() {
 void UnitreeConnection::send(const std::vector<uint8_t> &cmd) {
   if (socket_ && socket_->is_open()) {
     std::lock_guard<std::mutex> lock(data_mutex);
-    socket_->send_to(boost::asio::buffer(cmd), *receiver_endpoint_);
+    boost::system::error_code error;
+    socket_->send_to(boost::asio::buffer(cmd), *receiver_endpoint_, 0, error);
+    if (error) {
+      // The hardware UDP path is unused by Gazebo.  A transient host network
+      // outage must not terminate the simulator's locomotion controller.
+      static bool reported = false;
+      if (!reported) {
+        std::cerr << "Error in send_to: " << error.message() << '\n';
+        reported = true;
+      }
+    }
   }
 }
 

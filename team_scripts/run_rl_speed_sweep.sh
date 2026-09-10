@@ -35,7 +35,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 cd "$WORKSPACE_DIR"
-export SIMENV_DEVEL_DIR="${SIMENV_DEVEL_DIR:-$WORKSPACE_DIR/.simenv_build/devel}"
+CANONICAL_DEVEL_DIR="$WORKSPACE_DIR/.simenv_build/devel"
+export SIMENV_DEVEL_DIR="${SIMENV_DEVEL_DIR:-$CANONICAL_DEVEL_DIR}"
+if [ "$(readlink -f "$SIMENV_DEVEL_DIR")" != "$(readlink -f "$CANONICAL_DEVEL_DIR")" ]; then
+  echo "Refusing non-canonical build: SIMENV_DEVEL_DIR must be $CANONICAL_DEVEL_DIR" >&2
+  exit 3
+fi
 source /opt/ros/noetic/setup.bash
 source "$SIMENV_DEVEL_DIR/setup.bash"
 export ROS_PACKAGE_PATH="$WORKSPACE_DIR/src:${ROS_PACKAGE_PATH:-}"
