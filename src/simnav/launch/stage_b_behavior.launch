@@ -119,6 +119,10 @@
     <param name="sphere_point_stride" value="2"/>
     <param name="sphere_process_period" value="0.50"/>
     <param name="sphere_review_hold" value="2.0"/>
+    <!-- A lidar sphere hypothesis that the camera never covers must not block
+         FLOOR_COMPLETE forever; retire it after these bounds. -->
+    <param name="sphere_stable_stale_duration" value="30.0"/>
+    <param name="max_sphere_review_attempts" value="3"/>
     <param name="camera_resolution" value="0.25"/>
   </node>
 

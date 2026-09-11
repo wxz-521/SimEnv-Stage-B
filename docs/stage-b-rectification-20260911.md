@@ -265,7 +265,29 @@ level 2 时 `DET_0` 胜出）与 `test_lidar_sphere_review_keeps_validated_prior
 任一次出现漏检就回退到上一档。可用环境变量控制，无需改文件：
 `STAGE_B_DANGER_EARLY_EXIT_COVERAGE=0.78`。
 
-## 9. 产物
+## 10. run22 暴露的"楼层不 latch"根因与修复（2026-09-11 追加）
+
+run22（three_floor，0.84，按用户要求中途停止）在 floor 0 出现异常：
+`completed_topologies` 已是 4 个（rooms=4），但 `floor_complete` 一直不为真，
+`ROOM_L_43` 自身 `combined=0.887`（>0.840）却仍被反复重新锁定、以 CAMERA_FRONTIER
+再次进入，sim 565 s 仍未 latch（单层 run20 只需 359 s）。
+
+根因：`_check_completion` 要求 `unreviewed_sphere_hypotheses == 0`，而
+**稳定的激光球体假设（hits≥3）永不失效**：若相机始终没能覆盖其所在格子
+（复核动作已派发但 `_update_reviewed` 的 0.40 m 覆盖判据永不满足），
+该假设会无限期阻塞楼层完成，机器人就反复回到已完成的房间。
+
+修复（有界、可观测，且不改变 0.84 判据本身）：
+- `sphere_stable_stale_duration=30 s`：稳定假设超过该时长未被重新观测即过期删除；
+- `max_sphere_review_attempts=3`：复核已派发 3 次而相机仍未覆盖时，将该假设标记 reviewed
+  并 `logwarn`（"Retiring lidar sphere hypothesis ... floor completion unblocked"）；
+- 两者都只影响**激光提示**这一辅助通道，红球主检测（RGB-D）与 0.84 覆盖率门不变。
+
+另：按用户要求，**在 0.84 端到端跑通之前冻结一切"提速/换时间"档位**
+（`danger_early_exit_coverage` 保持 0）。
+
+
+## 11. 产物
 
 - `logs/run20_single084_reddiag_20260911/seed_20260902/`：**单层 0.84 通过轮**（4 房 + 3/3 红球 + 0 虚警，359.2 s）。
 - `logs/run21_three_084_20260911/seed_20260902/`：三层端到端轮（floor 0 完成，floor 1 地图交接处 route 超时 fault）。
