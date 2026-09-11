@@ -108,6 +108,12 @@
          0 detection only / 1 fallback review / 2 in-topology priority /
          3 global priority + preemption + cross-room-lock. -->
     <param name="danger_guidance_level" value="1"/>
+    <!-- Red-ball early exit: once the danger source inside the room is
+         confirmed, the room may finish at this combined coverage instead of
+         0.84.  0.0 = disabled (validated baseline).  Lower it one step at a
+         time and check danger recall + elapsed time. -->
+    <arg name="danger_early_exit_coverage" default="$(optenv STAGE_B_DANGER_EARLY_EXIT_COVERAGE 0.0)"/>
+    <param name="danger_early_exit_coverage" value="$(arg danger_early_exit_coverage)"/>
     <!-- Unconfirmed RGB-D red tracks become review goals for this long. -->
     <param name="detector_candidate_timeout" value="20.0"/>
     <param name="sphere_point_stride" value="2"/>

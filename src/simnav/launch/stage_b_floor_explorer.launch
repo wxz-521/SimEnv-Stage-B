@@ -4,6 +4,7 @@
   <arg name="initial_forward_distance" default="14.5"/>
   <arg name="motion_speed" default="0.60"/>
   <arg name="transit_speed" default="0.90"/>
+  <arg name="danger_early_exit_coverage" default="$(optenv STAGE_B_DANGER_EARLY_EXIT_COVERAGE 0.0)"/>
   <arg name="room_combined_coverage_target" default="0.84"/>
   <arg name="camera_coverage_target" default="0.85"/>
   <arg name="combined_coverage_target" default="0.84"/>
@@ -87,6 +88,7 @@
     <param name="sphere_min_hits" value="3"/>
     <param name="danger_candidate_min_hits" value="1"/>
     <param name="danger_guidance_level" value="1"/>
+    <param name="danger_early_exit_coverage" value="$(arg danger_early_exit_coverage)"/>
     <param name="detector_candidate_timeout" value="20.0"/>
     <param name="sphere_point_stride" value="2"/>
     <param name="sphere_process_period" value="0.50"/>

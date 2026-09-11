@@ -46,6 +46,7 @@ from coverage_explorer_core import (
     topology_state_for_new_target,
     target_kind_allowed_for_topology_state,
     topology_completion_ready,
+    topology_id_for_point,
 )
 
 
@@ -396,6 +397,16 @@ class CoverageExplorer:
             2.0, float(rospy.get_param("~detector_candidate_timeout", 20.0))
         )
         self.detector_reviewed = set()
+        # Red-ball guidance pays for itself by letting a room finish early once
+        # the danger source inside it is already confirmed.  0.0 disables this
+        # (validated baseline): a room then always needs the full 0.84 combined
+        # coverage.  Lowering it step by step trades area coverage for time only
+        # in rooms whose red sphere has actually been confirmed, so recall is
+        # not given up -- raise/lower one step at a time with recall evidence.
+        self.danger_early_exit_coverage = max(
+            0.0, float(rospy.get_param("~danger_early_exit_coverage", 0.0))
+        )
+        self.confirmed_danger_positions = []
 
         self.status_pub = rospy.Publisher("/simnav/explorer_status", String, queue_size=3, latch=True)
         self.coverage_pub = rospy.Publisher("/simnav/coverage_status", String, queue_size=3, latch=True)
@@ -429,6 +440,10 @@ class CoverageExplorer:
         rospy.Subscriber(
             "/simnav/danger_candidates", String,
             self._danger_candidate_callback, queue_size=2,
+        )
+        rospy.Subscriber(
+            "/simnav/danger_tracks", String,
+            self._danger_tracks_callback, queue_size=2,
         )
         self.control_timer = rospy.Timer(rospy.Duration(0.05), self._control)
         # Catch planner exceptions inside the callback.  An exception escaping
@@ -793,6 +808,40 @@ class CoverageExplorer:
                 rospy.loginfo(
                     "Camera reviewed danger-detector candidate %s", item["id"]
                 )
+
+    def _danger_tracks_callback(self, message):
+        """Track confirmed danger sources for the red-ball early-exit gate."""
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, ValueError):
+            return
+        positions = []
+        for item in payload.get("dangers", []):
+            position = item.get("position_world") or item.get("position") or []
+            if len(position) >= 2:
+                positions.append((float(position[0]), float(position[1])))
+        with self.lock:
+            self.confirmed_danger_positions = positions
+
+    def _danger_confirmed_in_topology(self, plan, topology_id):
+        """True when a confirmed red source is mapped to this room topology."""
+        if self.danger_early_exit_coverage <= 0.0:
+            return False
+        positions = list(self.confirmed_danger_positions)
+        portals = tuple(getattr(plan, "actionable_portals", ()) or ())
+        if not positions or not portals or self.gate_source is None:
+            return False
+        for point in positions:
+            owner = topology_id_for_point(
+                point,
+                self.gate_source[:2],
+                self.gate_source[2],
+                self.planner.corridor_half_width,
+                portals,
+            )
+            if str(owner) == str(topology_id):
+                return True
+        return False
 
     def _camera_exploration_ready_locked(self):
         # Camera observations accumulate as soon as the task corridor is
@@ -1369,11 +1418,30 @@ class CoverageExplorer:
             state["state"] = "APPROACHING"
 
         local = (plan.topology_coverages or {}).get(lock)
+        # A room whose red sphere is already confirmed has met the task
+        # objective; from `danger_early_exit_coverage` upward it may finish
+        # before the full area target.  0.0 keeps the validated 0.84-only gate.
+        danger_exit = bool(
+            state.get("state") == "EXPLORING"
+            and local is not None
+            and self.danger_early_exit_coverage > 0.0
+            and local.combined >= self.danger_early_exit_coverage
+            and self._danger_confirmed_in_topology(plan, lock)
+        )
         local_coverage_ok = bool(
             state.get("state") == "EXPLORING"
             and local is not None
-            and local.combined >= self.room_combined_coverage_target
+            and (
+                local.combined >= self.room_combined_coverage_target
+                or danger_exit
+            )
         )
+        if danger_exit and local.combined < self.room_combined_coverage_target:
+            rospy.loginfo(
+                "Room %s finishes early at combined=%.3f (threshold %.3f): "
+                "red source already confirmed in this topology",
+                lock, local.combined, self.danger_early_exit_coverage,
+            )
         if local_coverage_ok:
             state["state"] = "RETURNING"
             self.topology_region = "ROOM_RETURNING"

@@ -247,7 +247,25 @@ level 2 时 `DET_0` 胜出）与 `test_lidar_sphere_review_keeps_validated_prior
 `route_unreachable_timeout=60 s`（`route_retry_since` 在进入状态/成功规划/就近接受时清零），
 `max_route_retries` 只保留作诊断计数。日志同时打印 `cycles` 与 `unreachable=..s/60s`。
 
-## 7. 产物
+## 8. 用红球引导换时间：房间提前结束（分级、默认关闭）
+
+目的：在**不放弃红球召回**的前提下压缩总时间——只有"该房间的红球已被确认"时，房间才允许
+在低于 0.84 的综合覆盖下结束；没确认到红球的房间仍必须跑满 0.84。
+
+实现：
+- 探索器订阅 `/simnav/danger_tracks`（已确认危险源），保存世界坐标；
+- 新增 `danger_early_exit_coverage`（默认 **0.0 = 关闭**，即完全保持已验证基线）；
+- 房间完成判据变为：`combined >= room_target(0.84)` 或
+  （`combined >= danger_early_exit_coverage` 且该房间拓扑内存在已确认红球）；
+- 房间归属用与 planner 相同的 `topology_id_for_point` 判定，避免把别处的红球算到当前房间；
+- 触发时打印 `Room <id> finishes early at combined=.. (threshold ..)`，便于事后核算节省时间。
+
+分档计划（每次只降一档，记录 recall / 四房完成 / 总时长）：
+`0.0`（基线，run20：3/3 召回、359.2 s）→ `0.78` → `0.72` → `0.66` …
+任一次出现漏检就回退到上一档。可用环境变量控制，无需改文件：
+`STAGE_B_DANGER_EARLY_EXIT_COVERAGE=0.78`。
+
+## 9. 产物
 
 - `logs/run20_single084_reddiag_20260911/seed_20260902/`：**单层 0.84 通过轮**（4 房 + 3/3 红球 + 0 虚警，359.2 s）。
 - `logs/run21_three_084_20260911/seed_20260902/`：三层端到端轮（floor 0 完成，floor 1 地图交接处 route 超时 fault）。
