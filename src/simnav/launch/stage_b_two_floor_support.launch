@@ -32,6 +32,7 @@
     <param name="return_to_spawn_tolerance" value="0.45"/>
     <param name="gate_override" value="$(arg gate_override)"/>
     <param name="max_route_retries" value="40"/>
+    <param name="route_unreachable_timeout" value="60.0"/>
     <param name="route_accept_distance" value="1.2"/>
     <param name="motion_speed" value="0.90"/>
     <param name="crossing_speed" value="0.28"/>

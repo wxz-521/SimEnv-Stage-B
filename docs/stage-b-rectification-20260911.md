@@ -227,8 +227,30 @@ level 2 时 `DET_0` 胜出）与 `test_lidar_sphere_review_keeps_validated_prior
 同时把检测器 `moving_frequency` 5→10 Hz（只减少抽帧、不放宽颜色/形状/3 帧确认门），
 提高"恰好看到一眼红球"的机会。
 
-## 5. 产物
+## 6. 三层端到端 run21（2026-09-11 追加）
 
+`run21_three_084_20260911`（three_floor，0.84/0.85/0.84，level 1，timeout 1800）：
+
+- floor 0：`FLOOR_COMPLETE`，4/4 房（L_15/L_43/R_15/R_43），sim 359.1 s —— 与单层 run20 一致。
+- 电梯序列正常推进到 `ESTABLISH_FLOOR_1_TOPOLOGY`，随后
+  `MISSION_FAULT: ROUTE_UNREACHABLE_ESTABLISH_FLOOR_1_TOPOLOGY_AFTER_40`。
+- 危险源（全楼层真值 5 个，实际只探索了 floor 0）：`correct=2, missed=3, recall=0.4`，
+  命中 id10=(9.40,25.65) 偏差 0.65 m、id5=(-1.13,31.14) 偏差 0.75 m；floor 0 的 id1 本轮未命中
+  （run20 曾命中，说明该房间的命中仍受轨迹/抽帧影响）。
+
+**根因（日志）**：`ESTABLISH_FLOOR_1_TOPOLOGY` 于 sim 426.06 进入，sim 426.12 首次
+`A* has no route ... retry 1/40`，sim 428.07 即 fault —— 只有约 2 s。
+`route_retry_count` 是在"无路径"分支里**每个 20 Hz 控制周期**自增的，因此
+`max_route_retries=40` 实际约 2 s，而 run6 的 ESTABLISH 需要约 19.6 s 等地图交接。
+
+**修正**：把"不可达"判据从"周期计数"改为"真实时间"——新增
+`route_unreachable_timeout=60 s`（`route_retry_since` 在进入状态/成功规划/就近接受时清零），
+`max_route_retries` 只保留作诊断计数。日志同时打印 `cycles` 与 `unreachable=..s/60s`。
+
+## 7. 产物
+
+- `logs/run20_single084_reddiag_20260911/seed_20260902/`：**单层 0.84 通过轮**（4 房 + 3/3 红球 + 0 虚警，359.2 s）。
+- `logs/run21_three_084_20260911/seed_20260902/`：三层端到端轮（floor 0 完成，floor 1 地图交接处 route 超时 fault）。
 - `logs/run17_endtoend_084_20260911/seed_20260902/`：三层端到端（0.84）失败轮（planner 死锁证据）。
 - `logs/run18_single084_20260911/seed_20260902/`：单层（0.84）失败轮（对侧房间无目标证据）。
 - `logs/run19_single084_baseline_20260911/seed_20260902/`：基线回退后的单层验证。

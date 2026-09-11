@@ -194,6 +194,16 @@ class ElevatorTransition:
         self.max_route_retries = max(
             10, int(rospy.get_param("~max_route_retries", 40))
         )
+        # The retry counter is incremented once per 20 Hz control cycle while no
+        # route exists, so `max_route_retries` alone is a ~2 s timeout and the
+        # floor-1 map handoff needs ~20 s (run21 faulted at
+        # ROUTE_UNREACHABLE_ESTABLISH_FLOOR_1_TOPOLOGY_AFTER_40 only 2 s after
+        # entering the state).  Bound the unreachable condition by real time
+        # instead, keeping the cycle counter purely diagnostic.
+        self.route_unreachable_timeout = max(
+            10.0, float(rospy.get_param("~route_unreachable_timeout", 60.0))
+        )
+        self.route_retry_since = None
         self.route_accept_distance = max(
             0.2, float(rospy.get_param("~route_accept_distance", 1.2))
         )
@@ -624,6 +634,7 @@ class ElevatorTransition:
             self.route_target = None
             self.route_last_plan = rospy.Time(0)
             self.route_retry_count = 0
+            self.route_retry_since = None
         rospy.loginfo("Elevator transition state -> %s", state)
         self._publish_status()
 
@@ -720,6 +731,7 @@ class ElevatorTransition:
                 self.route_index = min(1, len(self.route) - 1)
                 self.route_state = self.state
                 self.route_target = target_key
+                self.route_retry_since = None
             elif not self.route:
                 self.route_retry_count += 1
                 self._stop()
@@ -733,19 +745,26 @@ class ElevatorTransition:
                         planar_distance(pose, target),
                     )
                     self.route_retry_count = 0
+                    self.route_retry_since = None
                     return True
-                if self.route_retry_count >= self.max_route_retries:
+                if self.route_retry_since is None:
+                    self.route_retry_since = now
+                unreachable_for = (now - self.route_retry_since).to_sec()
+                if unreachable_for >= self.route_unreachable_timeout:
                     self._fail(
-                        "ROUTE_UNREACHABLE_{}_AFTER_{}".format(
-                            self.state, self.route_retry_count
+                        "ROUTE_UNREACHABLE_{}_AFTER_{:.0f}S".format(
+                            self.state, unreachable_for
                         )
                     )
                     return False
                 rospy.logwarn_throttle(
                     5.0,
-                    "A* has no route to mapped target (%.2f, %.2f) in %s; retry %d/%d",
+                    "A* has no route to mapped target (%.2f, %.2f) in %s; "
+                    "cycles=%d unreachable=%.1fs/%.0fs",
                     target[0], target[1], self.state,
-                    self.route_retry_count, self.max_route_retries,
+                    self.route_retry_count,
+                    unreachable_for,
+                    self.route_unreachable_timeout,
                 )
                 return False
         if self.route:
