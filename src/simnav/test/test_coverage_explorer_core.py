@@ -743,6 +743,65 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(plan.target.kind, "SPHERE_REVIEW")
         self.assertEqual(plan.target.hypothesis_id, "sphere_1")
 
+    def test_detector_review_guidance_is_graded(self):
+        """A colour-detector hint must only outrank frontiers from level 2."""
+        grid = synthetic_floor()
+        portals = detect_room_portals(grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1)
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0,
+            safety_margin=0.0,
+            navigation_clearance=0.05,
+            forward_depth=24.0,
+            back_extension=1.0,
+            lateral_half_width=9.5,
+        )
+        common = dict(
+            grid=grid,
+            robot_pose=(0.0, 0.0, 0.0),
+            gate_center=(0.0, 0.0),
+            forward_yaw=0.0,
+            camera_seen=np.zeros(grid.data.shape, dtype=bool),
+            sphere_hypotheses=({"id": "DET_0", "center": (3.5, 3.0, 0.15)},),
+            confirmed_topologies=[item.topology_id for item in portals],
+            topology_lock="ROOM_L_7",
+        )
+        level1 = planner.plan(danger_guidance_level=1, **common)
+        level2 = planner.plan(danger_guidance_level=2, **common)
+        # Level 1: the hint is only a fallback, so an ordinary frontier wins.
+        self.assertIsNotNone(level1.target)
+        self.assertEqual(level1.target.kind, "CAMERA_FRONTIER")
+        # Level 2: the detector hint takes the top rank.
+        self.assertIsNotNone(level2.target)
+        self.assertEqual(level2.target.kind, "SPHERE_REVIEW")
+        self.assertEqual(level2.target.hypothesis_id, "DET_0")
+
+    def test_lidar_sphere_review_keeps_validated_priority(self):
+        """A lidar hypothesis (non DET_ id) is unaffected by the graded knob."""
+        grid = synthetic_floor()
+        portals = detect_room_portals(grid, (0.0, 0.0), 0.0, 35.0, 9.5, 1.1)
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0,
+            safety_margin=0.0,
+            navigation_clearance=0.05,
+            forward_depth=24.0,
+            back_extension=1.0,
+            lateral_half_width=9.5,
+        )
+        for level in (0, 1, 2, 3):
+            plan = planner.plan(
+                grid,
+                robot_pose=(0.0, 0.0, 0.0),
+                gate_center=(0.0, 0.0),
+                forward_yaw=0.0,
+                camera_seen=np.zeros(grid.data.shape, dtype=bool),
+                sphere_hypotheses=({"id": "sphere_1", "center": (3.5, 3.0, 0.15)},),
+                confirmed_topologies=[item.topology_id for item in portals],
+                topology_lock="ROOM_L_7",
+                danger_guidance_level=level,
+            )
+            self.assertIsNotNone(plan.target)
+            self.assertEqual(plan.target.kind, "SPHERE_REVIEW")
+
     def test_path_safety_checks_between_sparse_waypoints(self):
         data = np.zeros((20, 30), dtype=np.int16)
         data[:, 15] = 100

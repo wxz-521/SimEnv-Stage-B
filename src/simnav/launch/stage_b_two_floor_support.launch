@@ -9,6 +9,7 @@
   <node pkg="simnav" type="danger_detector_node.py" name="danger_detector" output="screen">
     <param name="confirmation_frames" value="3"/>
     <param name="cluster_radius" value="0.75"/>
+    <param name="moving_frequency" value="10.0"/>
     <param name="camera_observation_markers_enabled" value="true"/>
     <param name="camera_observation_resolution" value="0.25"/>
     <param name="camera_observation_pixel_stride" value="32"/>

@@ -151,7 +151,38 @@ two/three_floor 用 `--floor-index -1` 评估全楼层真值（5 个红球），
 
 （待运行结束后填写）
 
-## 3. 产物
+## 4. 红球引导：分级、渐进（2026-09-11 追加）
+
+需求：红球检测一点点来，不一开始就把红球当主目标，而是加入"红球对探索的引导"机制，
+逐步扩大能力，找到最好的一版。
+
+实现：新增 `danger_guidance_level`（0–3，默认 **1**），只对**颜色检测器**来源的红球
+候选（`hypothesis_id` 以 `DET_` 开头）生效；激光球体假设（`sphere_*`）保持已验证基线优先级，
+不受该档位影响。
+
+| 档位 | 行为 |
+| --- | --- |
+| 0 | 只检测，红球候选不参与规划（节点不把候选交给 planner） |
+| 1（当前默认） | 红球候选只作兜底：排序排在普通 frontier 之后，只有没有其他目标时才去 review；不抢占 |
+| 2 | 在已允许的拓扑内排第一（同一房间内优先），但不强抢安全的在途目标、不跨房间锁 |
+| 3 | 全局优先 + 可抢占安全在途目标 + 允许走廊红球跨房间锁 |
+
+实现位置：
+- `coverage_explorer_core.plan(..., danger_guidance_level=)`：`priority`/`target_priority`
+  只对 `DET_` 候选应用档位；走廊候选在 level≥1 才进入无锁分支，跨锁 review 在 level≥3 才启用。
+- `coverage_explorer_node`：`danger_guidance_level` 参数（0–3）；level 0 时
+  `_detector_candidates_locked()` 返回空；`sphere_preemption` 仅在 level≥3 生效。
+- launch：`stage_b_behavior.launch` / `stage_b_floor_explorer.launch` 显式写
+  `danger_guidance_level=1`。
+
+单元测试：`test_detector_review_guidance_is_graded`（level 1 时普通 frontier 胜出、
+level 2 时 `DET_0` 胜出）与 `test_lidar_sphere_review_keeps_validated_priority`
+（激光假设在 0–3 档都保持第一）。全部 61 项离线测试通过。
+
+同时把检测器 `moving_frequency` 5→10 Hz（只减少抽帧、不放宽颜色/形状/3 帧确认门），
+提高"恰好看到一眼红球"的机会。
+
+## 5. 产物
 
 - `logs/run17_endtoend_084_20260911/seed_20260902/`：三层端到端（0.84）失败轮（planner 死锁证据）。
 - `logs/run18_single084_20260911/seed_20260902/`：单层（0.84）失败轮（对侧房间无目标证据）。

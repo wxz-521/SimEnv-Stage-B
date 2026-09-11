@@ -1623,6 +1623,7 @@ class TaskCoveragePlanner:
         portal_prefix: str = "ROOM",
         force_laser_unknown: bool = False,
         portal_grid: Optional[GridView] = None,
+        danger_guidance_level: int = 0,
     ) -> CoveragePlan:
         empty = CoverageSnapshot(0.0, 0.0, 0.0, 0, 0, 0)
         if grid is None or robot_pose is None or gate_center is None or forward_yaw is None:
@@ -2033,7 +2034,35 @@ class TaskCoveragePlanner:
         # a target is dispatched the node locks its portal, after which only
         # camera frontiers in that room are eligible.  A lidar target remains
         # a room-local fallback only when no camera viewpoint exists yet.
-        priority = {"SPHERE_REVIEW": 0, "CAMERA_FRONTIER": 1, "LASER_FRONTIER": 1}
+        # Red-sphere guidance is introduced in graded steps so it never becomes
+        # the dominant objective by default:
+        #   level 0: detection only, detector-sourced red reviews never plan;
+        #   level 1: detector red reviews are an eligible fallback and rank
+        #            *behind* ordinary frontiers (chosen only if nothing else);
+        #   level 2: detector red reviews rank first inside the topology that is
+        #            already allowed (no cross-room-lock detour);
+        #   level 3: corridor-owned detector reviews may cross a room lock.
+        # Lidar sphere hypotheses keep their pre-existing (validated) priority:
+        # only the colour-detector hint is graduated here.
+        guidance_level = max(0, int(danger_guidance_level))
+        sphere_first = guidance_level >= 2
+        priority = {
+            "SPHERE_REVIEW": 0 if sphere_first else 2,
+            "CAMERA_FRONTIER": 1,
+            "LASER_FRONTIER": 1,
+        }
+
+        def detector_review(item):
+            return item.kind == "SPHERE_REVIEW" and str(
+                item.hypothesis_id or ""
+            ).startswith("DET_")
+
+        def target_priority(item):
+            if item.kind != "SPHERE_REVIEW":
+                return 1
+            if detector_review(item):
+                return priority["SPHERE_REVIEW"]
+            return 0
         camera_targets = [item for item in targets if item.kind == "CAMERA_FRONTIER"]
         if topology_lock and snapshot.camera < float(camera_target) and camera_targets:
             # When RGB-D still has a deficit, suppress ordinary lidar-only
@@ -2069,17 +2098,20 @@ class TaskCoveragePlanner:
                 item for item in locked_targets
                 if item.kind in ("CAMERA_FRONTIER", "SPHERE_REVIEW")
             ]
-            # A red object detected in the corridor must still be reviewed even
-            # while a room is locked: the room lock exists to sequence doorway
-            # approaches, not to ignore a danger source already in view.  Only
-            # corridor-owned reviews cross the lock; reviews owned by another
-            # room would create unchecked inter-room target churn.
-            corridor_reviews = [
-                item for item in targets
-                if item.kind == "SPHERE_REVIEW"
-                and item.topology_id == "CORRIDOR"
-                and item not in locked_targets
-            ]
+            # A red object detected in the corridor may be reviewed even while a
+            # room is locked, but only at the top guidance level: the room lock
+            # exists to sequence doorway approaches, so crossing it is an
+            # explicit opt-in rather than the default.
+            corridor_reviews = (
+                [
+                    item for item in targets
+                    if detector_review(item)
+                    and item.topology_id == "CORRIDOR"
+                    and item not in locked_targets
+                ]
+                if guidance_level >= 3
+                else []
+            )
             targets = (
                 locked_camera
                 or [item for item in locked_targets if item.kind == "LASER_FRONTIER"]
@@ -2089,8 +2121,9 @@ class TaskCoveragePlanner:
             )
         else:
             before_topology_filter = len(targets)
-            # Red-object reviews are globally eligible; ordinary corridor
-            # transit stays lidar-only, as before.
+            # The validated baseline keeps corridor transit lidar-only.  From
+            # level 1 the colour-detector reviews become an extra, lower-ranked
+            # fallback; lidar sphere hypotheses stay exactly as validated.
             corridor_frontiers = [
                 item for item in targets
                 if item.kind == "LASER_FRONTIER"
@@ -2099,17 +2132,19 @@ class TaskCoveragePlanner:
                     or item.topology_id in active_station_topologies
                 )
             ]
-            sphere_reviews = [
-                item for item in targets if item.kind == "SPHERE_REVIEW"
-            ]
-            targets = sphere_reviews + corridor_frontiers
+            detector_reviews = (
+                [item for item in targets if detector_review(item)]
+                if guidance_level >= 1
+                else []
+            )
+            targets = corridor_frontiers + detector_reviews
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
         if topology_lock:
             targets.sort(
                 key=lambda item: (
-                    priority[item.kind],
+                    target_priority(item),
                     item.path_length,
                     -item.combined_gain,
                     -item.min_clearance,
@@ -2119,10 +2154,9 @@ class TaskCoveragePlanner:
             # The corridor is one large topology: choose the nearest lidar
             # frontier regardless of which room interval it happens to lie
             # in.  Portal order would recreate a hidden front/rear schedule.
-            # A red-object review outranks any transit frontier.
             targets.sort(
                 key=lambda item: (
-                    priority[item.kind],
+                    target_priority(item),
                     item.path_length,
                     -item.laser_gain,
                     -item.min_clearance,

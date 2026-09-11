@@ -370,6 +370,12 @@ class CoverageExplorer:
         self.danger_candidate_min_hits = max(
             1, int(rospy.get_param("~danger_candidate_min_hits", 1))
         )
+        # Graded red-sphere guidance: 0 detection only, 1 fallback review,
+        # 2 in-topology priority, 3 global priority + preemption + cross-lock.
+        # Raised one level at a time with recall/time evidence.
+        self.danger_guidance_level = max(
+            0, min(3, int(rospy.get_param("~danger_guidance_level", 1)))
+        )
         self.sphere_point_stride = max(1, int(rospy.get_param("~sphere_point_stride", 2)))
         self.sphere_process_period = max(
             0.20, float(rospy.get_param("~sphere_process_period", 0.50))
@@ -754,6 +760,8 @@ class CoverageExplorer:
                 del self.detector_candidates[candidate_id]
 
     def _detector_candidates_locked(self):
+        if self.danger_guidance_level <= 0:
+            return []
         now = rospy.Time.now().to_sec()
         return [
             {
@@ -985,6 +993,7 @@ class CoverageExplorer:
             portal_prefix=self.floor_prefix,
             force_laser_unknown=self.floor_laser_isolated,
             portal_grid=self.raw_grid,
+            danger_guidance_level=self.danger_guidance_level,
         )
         with self.lock:
             seen_portal_ids = set()
@@ -1045,7 +1054,8 @@ class CoverageExplorer:
                 )
             )
             sphere_preemption = bool(
-                plan.target is not None
+                self.danger_guidance_level >= 3
+                and plan.target is not None
                 and plan.target.kind == "SPHERE_REVIEW"
                 and (self.active_target is None or self.active_target.kind != "SPHERE_REVIEW")
                 and (
