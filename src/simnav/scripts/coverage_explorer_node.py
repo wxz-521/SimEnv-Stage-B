@@ -199,6 +199,9 @@ class CoverageExplorer:
                 rospy.get_param("~virtual_gate_half_width", 1.1)
             ),
             virtual_gate_depth=float(rospy.get_param("~virtual_gate_depth", 0.30)),
+            min_room_interior_cells=int(
+                rospy.get_param("~min_room_interior_cells", 800)
+            ),
         )
         # The virtual entrance gate spans the full usable corridor width.  It
         # is a task/topology boundary only; the raw navigation map remains

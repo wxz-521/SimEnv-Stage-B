@@ -43,6 +43,11 @@
     <param name="task_corridor_half_width" value="1.1"/>
     <param name="virtual_gate_half_width" value="1.1"/>
     <param name="virtual_gate_depth" value="0.30"/>
+    <!-- Reject map seams promoted to doorways near the off-axis corridor
+         entrance gate: a real room leaves a large usable interior behind its
+         doorway, a seam leaves almost none (run17: real 4251-8712 eligible
+         cells, seams 185-730). -->
+    <param name="min_room_interior_cells" value="800"/>
     <param name="portal_jamb_length" value="$(arg portal_jamb_length)"/>
     <param name="portal_jamb_support" value="$(arg portal_jamb_support)"/>
     <param name="show_room_virtual_doors" value="true"/>

@@ -26,6 +26,11 @@
          This is not written into the navigation occupancy grid. -->
     <param name="virtual_gate_half_width" value="1.1"/>
     <param name="virtual_gate_depth" value="0.30"/>
+    <!-- Reject map seams promoted to doorways near the off-axis corridor
+         entrance gate: a real room leaves a large usable interior behind its
+         doorway, a seam leaves almost none (run17: real 4251-8712 eligible
+         cells, seams 185-730). -->
+    <param name="min_room_interior_cells" value="800"/>
     <!-- Show only temporally confirmed map-derived doorways in RViz.  The
          markers are diagnostics and never enter the navigation occupancy map. -->
     <param name="show_room_virtual_doors" value="true"/>

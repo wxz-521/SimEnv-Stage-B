@@ -1039,6 +1039,7 @@ class TaskCoveragePlanner:
         front_station_search_limit: float = 35.0,
         virtual_gate_half_width: Optional[float] = None,
         virtual_gate_depth: float = 0.30,
+        min_room_interior_cells: int = 800,
     ):
         self.robot_radius = float(robot_radius)
         self.safety_margin = float(safety_margin)
@@ -1050,6 +1051,13 @@ class TaskCoveragePlanner:
         self.forward_depth = max(1.0, float(forward_depth))
         self.lateral_half_width = max(1.0, float(lateral_half_width))
         self.corridor_half_width = max(0.2, float(corridor_half_width))
+        # A doorway candidate is only actionable when a usable room interior
+        # exists behind it.  The virtual corridor-entrance gate is anchored off
+        # the corridor axis, so the wall gaps around it are frequently promoted
+        # to false doorways; a real room leaves thousands of eligible cells,
+        # while a seam leaves a few hundred (run17: real rooms 4251-8712,
+        # seams 185-730).  0 disables the guard.
+        self.min_room_interior_cells = max(0, int(min_room_interior_cells))
         # Coverage excludes cells close to walls using robot_radius +
         # safety_margin.  Navigation is intentionally separate: the A1
         # footprint is 0.36 m wide plus 0.02 m padding on either side, so a
@@ -1770,6 +1778,36 @@ class TaskCoveragePlanner:
             if portal.topology_id in confirmed
             or portal.topology_id == str(topology_lock)
         ]
+        # Guard against map seams being promoted to doorways.  The virtual
+        # corridor-entrance gate is anchored a little off the corridor axis, and
+        # the wall gaps around it are a recurring source of false candidates; a
+        # real room leaves a large usable interior behind its doorway while a
+        # seam leaves almost none.  The locked topology is always kept so an
+        # in-progress room can never be filtered away mid-approach.
+        if self.min_room_interior_cells > 0 and len(confirmed_portals) > 1:
+            surviving_portals = []
+            for portal in confirmed_portals:
+                if portal.topology_id == str(topology_lock):
+                    surviving_portals.append(portal)
+                    continue
+                region = topology_region_mask(
+                    grid,
+                    gate_center,
+                    forward_yaw,
+                    extent.forward_limit,
+                    self.lateral_half_width,
+                    self.corridor_half_width,
+                    confirmed_portals,
+                    portal.topology_id,
+                )
+                interior = int(np.count_nonzero(region & eligible))
+                if interior >= self.min_room_interior_cells:
+                    surviving_portals.append(portal)
+                else:
+                    diagnostics["portals_rejected_tiny_interior"] = (
+                        int(diagnostics.get("portals_rejected_tiny_interior", 0)) + 1
+                    )
+            confirmed_portals = surviving_portals
         # Opposing door observations can shift longitudinally while the
         # robot exits and re-centres.  Keep the station bounded, but wide
         # enough to admit a directly facing door instead of forcing another
@@ -2120,6 +2158,7 @@ class TaskCoveragePlanner:
                 before_topology_filter - len(targets)
             )
         else:
+            unfiltered_targets = list(targets)
             before_topology_filter = len(targets)
             # The validated baseline keeps corridor transit lidar-only.  From
             # level 1 the colour-detector reviews become an extra, lower-ranked
@@ -2138,6 +2177,28 @@ class TaskCoveragePlanner:
                 else []
             )
             targets = corridor_frontiers + detector_reviews
+            if not targets:
+                # "No unknown lidar cell left" is not "floor finished".  A room
+                # whose interior the laser already mapped from the corridor
+                # still owes RGB-D coverage, and only a camera viewpoint puts
+                # the robot inside it.  Because this branch admits lidar
+                # frontiers only, that camera viewpoint used to be discarded
+                # and the planner returned NO_FRONTIER for ever: measured on
+                # run17_endtoend_084 (0.84, three_floor) the explorer sat with
+                # actionable_portals=16, camera coverage 0.414 against a 0.84
+                # target, and cmd_vel exactly 0 for 731 consecutive telemetry
+                # samples while ROOM_R_55 alone still had 5665 unseen cells.
+                # Admit camera viewpoints owned by unfinished rooms strictly as
+                # a last resort.  Normal corridor transit is untouched because
+                # this cannot run while any corridor lidar frontier exists, the
+                # confirmation and active-portal filters below still apply, and
+                # a floor whose portals are all complete still reports
+                # NO_FRONTIER.
+                targets = [
+                    item for item in unfiltered_targets
+                    if item.kind == "CAMERA_FRONTIER"
+                    and item.topology_id in active_station_topologies
+                ]
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
