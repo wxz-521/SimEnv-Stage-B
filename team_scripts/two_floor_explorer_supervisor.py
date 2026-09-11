@@ -13,23 +13,30 @@ from std_msgs.msg import Bool, String
 class Supervisor:
     def __init__(self):
         self.lock = threading.RLock()
-        # Match run_stage_b_seed.sh: the room metric is near-saturated at 0.84
-        # while the separate combined gate sits at the validated 0.40.  A 0.70
-        # room default here silently started multi-floor runs at a different
-        # threshold than the single-floor baseline whenever the caller did not
-        # export the environment explicitly.
+        # Restore the validated Stage B room criterion: the room gate is the
+        # 5/95 combined metric (0.05*laser + 0.95*camera) and 0.84 was the
+        # lowest threshold that still gave 3/3 red-sphere recall on the frozen
+        # seed (SimEnv_two_floor_exploration_codex_spec.md section 17).
+        # Red-sphere recall at lower area coverage is protected by the
+        # dedicated SPHERE_REVIEW policy, not by lowering this number.
         self.room_coverage_target = float(
             os.environ.get("STAGE_B_ROOM_COMBINED_COVERAGE_TARGET", "0.84")
         )
         self.motion_speed = float(os.environ.get("STAGE_B_MOTION_SPEED", "0.60"))
+        # The floor-wide gates stay at the historically validated values
+        # (laser 0.95 / camera 0.85 / combined 0.84).  camera_coverage_target is
+        # functional: it keeps generating camera-unseen viewpoints until the
+        # floor reaches 0.85, which is what pushes the fixed forward camera deep
+        # enough into each room to see the red spheres (3/3 floor-0 recall in
+        # coverage_speed_sweep_95cam_20260901/speed_060).
         self.camera_coverage_target = float(
             os.environ.get(
                 "STAGE_B_CAMERA_COVERAGE_TARGET",
-                "0.40",
+                "0.85",
             )
         )
         self.combined_coverage_target = float(
-            os.environ.get("STAGE_B_COMBINED_COVERAGE_TARGET", "0.40")
+            os.environ.get("STAGE_B_COMBINED_COVERAGE_TARGET", "0.84")
         )
         self.initial_test_yaw_bias = float(
             os.environ.get("STAGE_B_INITIAL_TEST_YAW_BIAS", "0.0")

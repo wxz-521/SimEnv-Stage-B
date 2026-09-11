@@ -28,17 +28,29 @@
     <param name="main_entrance_door_id" value="main_entrance"/>
     <param name="return_to_spawn_tolerance" value="0.45"/>
     <param name="gate_override" value="$(arg gate_override)"/>
-    <param name="motion_speed" value="0.35"/>
-    <param name="crossing_speed" value="0.22"/>
+    <param name="max_route_retries" value="40"/>
+    <param name="route_accept_distance" value="1.2"/>
+    <param name="motion_speed" value="0.90"/>
+    <param name="crossing_speed" value="0.28"/>
+    <param name="lobby_approach_speed" value="0.45"/>
     <param name="elevator_approach_tolerance" value="0.80"/>
     <param name="navigation_clearance" value="0.30"/>
     <param name="preferred_clearance" value="0.42"/>
     <param name="route_replan_period" value="2.0"/>
     <param name="elevator_candidate_confirm_cycles" value="5"/>
     <param name="elevator_lobby_wall_offset" value="1.65"/>
-    <param name="fall_roll_limit_deg" value="60.0"/>
-    <param name="fall_pitch_limit_deg" value="60.0"/>
-    <param name="fall_base_height" value="0.15"/>
+    <param name="fall_roll_limit_deg" value="30.0"/>
+    <param name="fall_pitch_limit_deg" value="30.0"/>
+    <param name="fall_base_height" value="0.10"/>
+    <param name="fall_drop_threshold" value="0.15"/>
+    <!-- run14: the metric z estimate drifted 0.33 m -> 0.09 m over 325 s
+         (0.00072 m/s of sim time) while the robot walked upright and covered
+         4/4 rooms; the absolute-floor test then faulted the mission 49 ms into
+         RETURN_TO_ELEVATOR.  The drop reference is therefore a slow median
+         that follows the drift.  Normal gait peaks at 12.5 deg of tilt, a real
+         fall at 35-45 deg, so the 30 deg attitude limit keeps a 2.4x margin. -->
+    <param name="fall_baseline_window" value="20.0"/>
+    <param name="fall_baseline_min_samples" value="20"/>
     <param name="fall_grace_seconds" value="15.0"/>
     <param name="elevator_candidate_lateral_min" value="$(arg elevator_candidate_lateral_min)"/>
     <param name="elevator_candidate_lateral_max" value="$(arg elevator_candidate_lateral_max)"/>

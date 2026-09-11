@@ -2069,15 +2069,29 @@ class TaskCoveragePlanner:
                 item for item in locked_targets
                 if item.kind in ("CAMERA_FRONTIER", "SPHERE_REVIEW")
             ]
-            targets = locked_camera or [
-                item for item in locked_targets if item.kind == "LASER_FRONTIER"
+            # A red object detected in the corridor must still be reviewed even
+            # while a room is locked: the room lock exists to sequence doorway
+            # approaches, not to ignore a danger source already in view.  Only
+            # corridor-owned reviews cross the lock; reviews owned by another
+            # room would create unchecked inter-room target churn.
+            corridor_reviews = [
+                item for item in targets
+                if item.kind == "SPHERE_REVIEW"
+                and item.topology_id == "CORRIDOR"
+                and item not in locked_targets
             ]
+            targets = (
+                locked_camera
+                or [item for item in locked_targets if item.kind == "LASER_FRONTIER"]
+            ) + corridor_reviews
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
         else:
             before_topology_filter = len(targets)
-            targets = [
+            # Red-object reviews are globally eligible; ordinary corridor
+            # transit stays lidar-only, as before.
+            corridor_frontiers = [
                 item for item in targets
                 if item.kind == "LASER_FRONTIER"
                 and (
@@ -2085,6 +2099,10 @@ class TaskCoveragePlanner:
                     or item.topology_id in active_station_topologies
                 )
             ]
+            sphere_reviews = [
+                item for item in targets if item.kind == "SPHERE_REVIEW"
+            ]
+            targets = sphere_reviews + corridor_frontiers
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
@@ -2101,8 +2119,10 @@ class TaskCoveragePlanner:
             # The corridor is one large topology: choose the nearest lidar
             # frontier regardless of which room interval it happens to lie
             # in.  Portal order would recreate a hidden front/rear schedule.
+            # A red-object review outranks any transit frontier.
             targets.sort(
                 key=lambda item: (
+                    priority[item.kind],
                     item.path_length,
                     -item.laser_gain,
                     -item.min_clearance,
@@ -2232,6 +2252,20 @@ class TaskCoveragePlanner:
                     )
                     )
                 if path:
+                    # Reject gross detours: a target behind a wall is still
+                    # "reachable" by a long route around the partition, and
+                    # dispatching it burns the whole doorway-approach budget.
+                    # Observed on floor 0 of the 0.84 run: a room camera
+                    # frontier with a ~5 m straight line was dispatched with a
+                    # 23 m (then 32 m) path, the doorway was never crossed and
+                    # the room was parked as BLOCKED.
+                    straight = math.hypot(
+                        float(candidate.target[0]) - float(robot_pose[0]),
+                        float(candidate.target[1]) - float(robot_pose[1]),
+                    )
+                    if path_length > 8.0 and path_length > 3.0 * max(straight, 0.5):
+                        diagnostics["candidate_reject_counts"]["path_unreachable"] += 1
+                        continue
                     chosen_index = index
                     chosen = replace(
                         candidate,

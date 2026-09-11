@@ -8,6 +8,7 @@ import sys
 import threading
 import ast
 import time
+from collections import deque
 import numpy as np
 
 import rospy
@@ -74,6 +75,14 @@ class ElevatorTransition:
         self.minimum_floor_rise = float(rospy.get_param("~minimum_floor_rise", 2.0))
         self.motion_speed = float(rospy.get_param("~motion_speed", 0.35))
         self.crossing_speed = float(rospy.get_param("~crossing_speed", 0.22))
+        # Corridor transit may run at motion_speed, but the final lobby/gate
+        # approach used to be clamped to min(motion_speed, 0.30) and dominated
+        # the transition cost (run 6: RETURN_TO_FLOOR_1_GATE 81 s + 73 s with a
+        # 0.30-0.35 m/s ceiling).  Give that approach an explicit ceiling that
+        # is still slower than open-corridor transit but no longer a crawl.
+        self.lobby_approach_speed = max(
+            0.20, float(rospy.get_param("~lobby_approach_speed", 0.45))
+        )
         self.turn_speed = float(rospy.get_param("~turn_speed", 0.45))
         self.stop_distance = float(rospy.get_param("~stop_distance", 0.42))
         self.target_tolerance = float(rospy.get_param("~target_tolerance", 0.35))
@@ -125,13 +134,41 @@ class ElevatorTransition:
         # no fault recorded.
         self.base_roll = 0.0
         self.base_pitch = 0.0
+        # A real fall on this robot measured 35-45 degrees of tilt with the base
+        # at 0.041 m, while upright walking stays within ~11 degrees; 30 degrees
+        # therefore separates them with margin.
         self.fall_roll_limit = math.radians(
-            float(rospy.get_param("~fall_roll_limit_deg", 60.0))
+            float(rospy.get_param("~fall_roll_limit_deg", 30.0))
         )
         self.fall_pitch_limit = math.radians(
-            float(rospy.get_param("~fall_pitch_limit_deg", 60.0))
+            float(rospy.get_param("~fall_pitch_limit_deg", 30.0))
         )
-        self.fall_base_height = float(rospy.get_param("~fall_base_height", 0.15))
+        self.fall_base_height = float(rospy.get_param("~fall_base_height", 0.10))
+        # The metric z estimate drifts slowly downward during a long run
+        # (measured 0.33 m -> 0.07 m over 230 s in run14 while the robot kept
+        # walking upright and covering rooms).  A single low sample is therefore
+        # not a fall.  A fall is a *sudden* drop: use the height change over a
+        # short window instead of an absolute floor.
+        self.fall_drop_threshold = float(
+            rospy.get_param("~fall_drop_threshold", 0.15)
+        )
+        self.fall_drop_window = max(
+            0.3, float(rospy.get_param("~fall_drop_window", 1.5))
+        )
+        # The reference for the drop test is a *slow* median, not the recent
+        # maximum: the metric z estimate drifts downward monotonically during a
+        # long run (0.33 m -> 0.09 m over 325 s in run14), so any short-window
+        # test eventually compares a drifted sample against an older, higher
+        # one.  A 20 s baseline follows that drift while still being far too
+        # slow to absorb a real fall.
+        self.fall_baseline_window = max(
+            self.fall_drop_window,
+            float(rospy.get_param("~fall_baseline_window", 20.0)),
+        )
+        self.fall_baseline_min_samples = int(
+            rospy.get_param("~fall_baseline_min_samples", 20)
+        )
+        self.fall_height_history = deque(maxlen=4000)
         # FAST-LIO reports the base close to the ground while it converges, and
         # the body is still settling at spawn.  Ignore attitude and height for
         # the first seconds of the run so startup cannot look like a fall.
@@ -147,6 +184,18 @@ class ElevatorTransition:
         )
         self.return_to_spawn_tolerance = max(
             0.05, float(rospy.get_param("~return_to_spawn_tolerance", 0.45))
+        )
+        # A fixed mapped target can be permanently unreachable while the map is
+        # still sparse.  Retrying forever blocks the whole mission: observed on
+        # the second floor, A* failed 1282 times for the lobby search point
+        # (12.31, -0.40) and the elevator never reached FLOOR_1_READY.  Bound the
+        # retries and accept the current pose when it is already close enough,
+        # so the mission proceeds instead of stalling until the run timeout.
+        self.max_route_retries = max(
+            10, int(rospy.get_param("~max_route_retries", 40))
+        )
+        self.route_accept_distance = max(
+            0.2, float(rospy.get_param("~route_accept_distance", 1.2))
         )
         self.main_entrance_opened = False
         self.returned_to_spawn = False
@@ -391,13 +440,38 @@ class ElevatorTransition:
             self.base_pitch = float(pitch)
             self.last_pose_stamp = rospy.Time.now()
 
+    def _record_base_height(self, pose):
+        """Track the base height on every tick, in every state.
+
+        The explorer owns the ground floor for the whole exploration segment,
+        and the old code only sampled the height once a transition state was
+        active.  That starved the baseline, so the first sample taken after
+        `WAIT_FLOOR_COMPLETE` was compared against a badly outdated reference
+        (run14: a false ROBOT_ON_GROUND 49 ms after entering
+        RETURN_TO_ELEVATOR, which faulted the mission with 4/4 rooms done).
+        """
+        if pose is None:
+            return
+        height = float(pose[3])
+        if not math.isfinite(height):
+            return
+        now = time.time()
+        history = self.fall_height_history
+        history.append((now, height))
+        while history and now - history[0][0] > self.fall_baseline_window:
+            history.popleft()
+
     def _check_fall(self, pose):
-        """Return a fault string when the base is rolled or on the ground.
+        """Return a fault string when the base is rolled or has just dropped.
 
         Measured on this robot: upright walking sits at 0.273-0.412 m with
         attitude within roughly 11 degrees, while a real fall measured 0.041 m
-        with 35-45 degrees of tilt.  The height limit is therefore placed well
-        below the walking band instead of near it.
+        with 35-45 degrees of tilt.  The height test is a *drop* test against a
+        slow baseline, not an absolute floor, because the metric z estimate
+        drifts monotonically downward during long runs (~0.0007 m/s measured in
+        run14).  A 20 s median tracks that drift; a real fall is a step change
+        of >= fall_drop_threshold inside fall_drop_window and is also caught by
+        the attitude test.
         """
         if time.time() - self.started_at_wall < self.fall_grace_seconds:
             return None
@@ -405,7 +479,34 @@ class ElevatorTransition:
             roll, pitch = self.base_roll, self.base_pitch
         if abs(roll) > self.fall_roll_limit or abs(pitch) > self.fall_pitch_limit:
             return "ROBOT_ROLLED"
-        if pose is not None and float(pose[3]) < self.fall_base_height:
+        if pose is None:
+            return None
+        height = float(pose[3])
+        if not math.isfinite(height):
+            return None
+        now = time.time()
+        with self.lock:
+            recent = [
+                value
+                for stamp, value in self.fall_height_history
+                if now - stamp <= self.fall_drop_window
+            ]
+            baseline = [
+                value
+                for stamp, value in self.fall_height_history
+                if now - stamp <= self.fall_baseline_window
+            ]
+        if len(baseline) < self.fall_baseline_min_samples:
+            return None
+        ordered = sorted(baseline)
+        baseline_median = ordered[len(ordered) // 2]
+        if height >= self.fall_base_height:
+            return None
+        # A fall must be a genuine step change away from the drifting baseline,
+        # not merely a low reading of an estimate that keeps sinking.
+        if (baseline_median - height) >= self.fall_drop_threshold:
+            return "ROBOT_ON_GROUND"
+        if recent and (max(recent) - height) >= self.fall_drop_threshold:
             return "ROBOT_ON_GROUND"
         return None
 
@@ -622,10 +723,29 @@ class ElevatorTransition:
             elif not self.route:
                 self.route_retry_count += 1
                 self._stop()
+                # Close enough counts as arrived: a sparse map can leave the
+                # final metre unbudgeted while the robot is already standing on
+                # the reference point.
+                if planar_distance(pose, target) <= self.route_accept_distance:
+                    rospy.loginfo(
+                        "Accepting %s within %.2f m of mapped target (no A* route)",
+                        self.state,
+                        planar_distance(pose, target),
+                    )
+                    self.route_retry_count = 0
+                    return True
+                if self.route_retry_count >= self.max_route_retries:
+                    self._fail(
+                        "ROUTE_UNREACHABLE_{}_AFTER_{}".format(
+                            self.state, self.route_retry_count
+                        )
+                    )
+                    return False
                 rospy.logwarn_throttle(
                     5.0,
-                    "A* has no route to mapped target (%.2f, %.2f) in %s; retry %d",
-                    target[0], target[1], self.state, self.route_retry_count,
+                    "A* has no route to mapped target (%.2f, %.2f) in %s; retry %d/%d",
+                    target[0], target[1], self.state,
+                    self.route_retry_count, self.max_route_retries,
                 )
                 return False
         if self.route:
@@ -777,6 +897,10 @@ class ElevatorTransition:
             elevator_portal = self.elevator_portal
         if not self.enabled or self.two_floor_mission_complete or self.fault is not None:
             return
+        # Sample the base height in *every* state, including while the explorer
+        # owns the ground floor, so the fall baseline follows the metric drift.
+        if pose is not None and (rospy.Time.now() - self.last_pose_stamp).to_sec() <= 1.0:
+            self._record_base_height(pose)
         if state == self.WAITING:
             if floor_complete or self.start_immediately:
                 # The ground floor is the reference for the shared topology.
@@ -891,7 +1015,8 @@ class ElevatorTransition:
                     source_gate, self.floor1_corridor_advance
                 )
                 reached = self._drive_planned_to(
-                    source_pose, corridor_target, min(self.motion_speed, 0.30)
+                    source_pose, corridor_target,
+                    min(self.motion_speed, self.lobby_approach_speed),
                 )
             else:
                 corridor_target = point_from_gate(
@@ -938,7 +1063,8 @@ class ElevatorTransition:
             target = point_from_gate(self.floor1_gate, self.lobby_search_offset)
             if source_pose is not None:
                 reached = self._drive_planned_to(
-                    source_pose, target, min(self.motion_speed, 0.30),
+                    source_pose, target,
+                    min(self.motion_speed, self.lobby_approach_speed),
                 )
             else:
                 self._stop()

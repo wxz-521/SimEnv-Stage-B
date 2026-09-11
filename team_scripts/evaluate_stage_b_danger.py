@@ -13,7 +13,8 @@ def parse_args():
     parser.add_argument("--detected", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary")
-    parser.add_argument("--floor-index", type=int, default=0)
+    parser.add_argument("--floor-index", type=int, default=0,
+                        help="-1 evaluates every floor of the building")
     parser.add_argument("--threshold", type=float, default=1.0)
     # Stage B functional closeout requires every truth source to be matched.
     parser.add_argument("--minimum-recall", type=float, default=1.0)
@@ -29,10 +30,14 @@ def main():
     args = parse_args()
     truth_payload = json.loads(Path(args.truth).read_text(encoding="utf-8"))
     detected_payload = json.loads(Path(args.detected).read_text(encoding="utf-8"))
+    all_floors = args.floor_index < 0
     truth = [
         item["position"]
         for item in truth_payload.get("danger_sources", [])
-        if int(item.get("floor_index", -1)) == args.floor_index
+        if (
+            all_floors
+            or int(item.get("floor_index", -1)) == args.floor_index
+        )
         and item.get("is_danger", True)
     ]
     detected = [

@@ -3,9 +3,10 @@
   <arg name="corridor_yaw" default="0.0"/>
   <arg name="initial_forward_distance" default="14.5"/>
   <arg name="motion_speed" default="0.60"/>
-  <arg name="room_combined_coverage_target" default="0.40"/>
-  <arg name="camera_coverage_target" default="0.40"/>
-  <arg name="combined_coverage_target" default="0.40"/>
+  <arg name="transit_speed" default="0.90"/>
+  <arg name="room_combined_coverage_target" default="0.84"/>
+  <arg name="camera_coverage_target" default="0.85"/>
+  <arg name="combined_coverage_target" default="0.84"/>
   <arg name="initial_lateral_correction_start" default="0.20"/>
   <arg name="initial_lateral_correction_gain" default="0.30"/>
   <arg name="initial_yaw_correction_gain" default="0.45"/>
@@ -20,7 +21,7 @@
   <node pkg="simnav" type="coverage_explorer_node.py" name="$(arg node_name)" output="screen">
     <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
     <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
-    <param name="initial_forward_speed" value="0.45"/>
+    <param name="initial_forward_speed" value="0.90"/>
     <param name="initial_centering_start_distance" value="10.5"/>
     <param name="elevator_detection_start_distance" value="4.0"/>
     <param name="elevator_detection_end_distance" value="10.5"/>
@@ -59,7 +60,9 @@
     <param name="target_replace_stall" value="8.0"/>
     <param name="room_completion_miss_cycles" value="3"/>
     <param name="station_partner_wait_cycles" value="20"/>
+    <param name="room_frontier_wait_cycles" value="0"/>
     <param name="portal_confirm_cycles" value="1"/>
+    <param name="door_search_enabled" value="false"/>
     <param name="door_search_step_distance" value="1.0"/>
     <param name="door_search_wait_cycles" value="3"/>
     <param name="door_search_front_limit" value="3.0"/>
@@ -74,13 +77,16 @@
     <param name="heading_tolerance" value="0.25"/>
     <param name="motion_stop_distance" value="0.48"/>
     <param name="motion_speed" value="$(arg motion_speed)"/>
+    <param name="transit_speed" value="$(arg transit_speed)"/>
     <param name="turn_speed" value="0.65"/>
-    <param name="laser_coverage_target" value="0.40"/>
+    <param name="laser_coverage_target" value="0.95"/>
     <param name="camera_coverage_target" value="$(arg camera_coverage_target)"/>
     <param name="combined_coverage_target" value="$(arg combined_coverage_target)"/>
-    <param name="camera_weight" value="0.90"/>
+    <param name="camera_weight" value="0.95"/>
     <param name="completion_stable_duration" value="3.0"/>
     <param name="sphere_min_hits" value="3"/>
+    <param name="danger_candidate_min_hits" value="1"/>
+    <param name="detector_candidate_timeout" value="20.0"/>
     <param name="sphere_point_stride" value="2"/>
     <param name="sphere_process_period" value="0.50"/>
     <param name="sphere_review_hold" value="2.0"/>

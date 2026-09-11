@@ -426,19 +426,24 @@ set -e
 save_visual_artifacts
 copy_artifacts
 
-if [ "$RUN_MODE" != "two_floor" ] && [ "$RUN_MODE" != "three_floor" ]; then
-  set +e
-  python3 team_scripts/evaluate_stage_b_danger.py \
-    --truth "$RUN_DIR/danger_truth.json" \
-    --detected "$RUN_DIR/detected_danger.json" \
-    --output "$RUN_DIR/danger_evaluation.json" \
-    --summary "$RUN_DIR/result.json" \
-    > "$RUN_DIR/danger_evaluation.log" 2>&1
-  DANGER_EXIT=$?
-  set -e
-  if [ "$DANGER_EXIT" -ne 0 ]; then
-    MONITOR_EXIT=1
-  fi
+# The scored artifact must be evaluated for every mode.  Single-floor runs keep
+# the historical floor-0 rule; multi-floor runs must match all building truth.
+DANGER_FLOOR_INDEX=0
+if [ "$RUN_MODE" = "two_floor" ] || [ "$RUN_MODE" = "three_floor" ]; then
+  DANGER_FLOOR_INDEX=-1
+fi
+set +e
+python3 team_scripts/evaluate_stage_b_danger.py \
+  --truth "$RUN_DIR/danger_truth.json" \
+  --detected "$RUN_DIR/detected_danger.json" \
+  --floor-index "$DANGER_FLOOR_INDEX" \
+  --output "$RUN_DIR/danger_evaluation.json" \
+  --summary "$RUN_DIR/result.json" \
+  > "$RUN_DIR/danger_evaluation.log" 2>&1
+DANGER_EXIT=$?
+set -e
+if [ "$DANGER_EXIT" -ne 0 ]; then
+  MONITOR_EXIT=1
 fi
 
 exit "$MONITOR_EXIT"

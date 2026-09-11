@@ -149,7 +149,14 @@ def main():
         if (rospy.Time.now() - start).to_sec() >= args.sim_timeout:
             break
         time.sleep(0.05)
-    elapsed = max(0.0, (rospy.Time.now() - start).to_sec())
+    # /simnav/two_floor_mission_complete is published in the same control
+    # iteration as the final /simnav/elevator_status; give the status message a
+    # moment to arrive so returned_to_spawn/main_entrance_opened are not read
+    # from the previous payload.
+    completed_at = rospy.Time.now()
+    if task_complete() and not rospy.is_shutdown():
+        rospy.sleep(rospy.Duration(1.0))
+    elapsed = max(0.0, (completed_at - start).to_sec())
     laser = float(latest.get("laser_coverage", 0.0))
     camera = float(latest.get("camera_coverage", 0.0))
     combined = float(latest.get("combined_coverage", 0.0))
@@ -173,11 +180,23 @@ def main():
             and all(states.get(item, {}).get("state") == "COMPLETE" for item in completed)
         )
 
+    def completed_floor_indices(payload):
+        try:
+            return {int(item) for item in payload.get("completed_floor_indices", [])}
+        except (TypeError, ValueError):
+            return set()
+
     if args.three_floor:
+        # The mission now ends by riding back down, opening the main entrance
+        # and returning to spawn, so `floor_index` is 0 at completion.  The
+        # top-floor requirement has to be checked against the recorded set of
+        # completed floors, not against the live floor index.
         passed = bool(
             mission_fault is None
             and two_floor_mission_complete
-            and latest_elevator.get("floor_index") == 2
+            and latest_elevator.get("returned_to_spawn", False)
+            and latest_elevator.get("main_entrance_opened", False)
+            and 2 in completed_floor_indices(latest_elevator)
             and all(floor_rooms_ok(index) for index in (0, 1, 2))
             and max_pose_step < 1.0
         )
@@ -185,7 +204,9 @@ def main():
         passed = bool(
             mission_fault is None
             and two_floor_mission_complete
-            and latest_elevator.get("floor_index") == 1
+            and latest_elevator.get("returned_to_spawn", False)
+            and latest_elevator.get("main_entrance_opened", False)
+            and 1 in completed_floor_indices(latest_elevator)
             and completed_rooms_ok
             and latest_elevator.get("floor1_complete", False)
             and max_pose_step < 1.0
@@ -198,14 +219,22 @@ def main():
             and max_pose_step < 1.0
         )
     else:
+        # Plain single-floor run.  The elevator isolation flag only exists when
+        # the transition was actually enabled (RUN_MODE=full, i.e.
+        # --wait-floor-transition); a coverage-only run has no elevator_status
+        # at all and used to be unable to pass even with a complete floor.
         passed = bool(
-        mission_fault is None
-        and floor_complete
-        and (floor_transition_complete or not args.wait_floor_transition)
-        and latest_elevator.get("floor1_topology_isolated", False)
-        and completed_rooms_ok
-        and not latest.get("unreviewed_sphere_hypotheses", [])
-        and max_pose_step < 1.0
+            mission_fault is None
+            and floor_complete
+            and (floor_transition_complete or not args.wait_floor_transition)
+            and (
+                latest_elevator.get("floor1_topology_isolated", False)
+                if args.wait_floor_transition
+                else True
+            )
+            and completed_rooms_ok
+            and not latest.get("unreviewed_sphere_hypotheses", [])
+            and max_pose_step < 1.0
         )
     payload = {
         "mode": "joint_coverage",
@@ -214,6 +243,8 @@ def main():
         "floor_complete": floor_complete,
         "floor_transition_complete": floor_transition_complete,
         "two_floor_mission_complete": two_floor_mission_complete,
+        "returned_to_spawn": bool(latest_elevator.get("returned_to_spawn", False)),
+        "main_entrance_opened": bool(latest_elevator.get("main_entrance_opened", False)),
         "elapsed_sim_time": round(elapsed, 3),
         "mission_fault": mission_fault,
         "state_sequence": state_sequence,

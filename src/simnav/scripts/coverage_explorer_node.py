@@ -216,6 +216,15 @@ class CoverageExplorer:
         self.heading_tolerance = max(0.08, float(rospy.get_param("~heading_tolerance", 0.25)))
         self.motion_stop_distance = max(0.30, float(rospy.get_param("~motion_stop_distance", 0.48)))
         self.motion_speed = max(0.30, float(rospy.get_param("~motion_speed", 0.60)))
+        # Corridor-only transit may run faster than room exploration.  The
+        # competition scores exploration time, but raising the speed inside a
+        # room changes camera-frontier reachability and was never validated;
+        # the rear corridor transit is a straight 12 m run with no coverage
+        # objective, so it gets its own knob.  Doorway crossings stay capped at
+        # 0.25 m/s in _control.
+        self.transit_speed = max(
+            self.motion_speed, float(rospy.get_param("~transit_speed", self.motion_speed))
+        )
         self.turn_speed = max(0.15, float(rospy.get_param("~turn_speed", 0.65)))
         self.review_hold_duration = max(0.5, float(rospy.get_param("~sphere_review_hold", 2.0)))
         self.camera_resolution = max(0.05, float(rospy.get_param("~camera_resolution", 0.25)))
@@ -314,11 +323,30 @@ class CoverageExplorer:
         self.room_completion_miss_cycles = max(
             2, int(rospy.get_param("~room_completion_miss_cycles", 3))
         )
+        # When a room approach fails before the doorway is crossed the topology
+        # is parked as BLOCKED.  If that leaves the planner with no target at
+        # all, the mission used to idle until the run timeout (observed on
+        # floor 0 of the 0.84 three-floor run: ROOM_L_43 BLOCKED, corridor fully
+        # known, NO_FRONTIER, cmd_vel 0 for the rest of the run).  Re-open the
+        # least-covered blocked room a bounded number of times so the doorway
+        # gets another attempt instead of ending the mission.
+        self.max_room_retries = max(
+            1, int(rospy.get_param("~max_room_retries", 3))
+        )
+        self.room_retry_counts = {}
         # Bounded wait for an opposing room that currently has no executable
         # target.  Large enough to ride out a sparse map, small enough that a
         # physically unreachable partner cannot hang the floor forever.
         self.station_partner_wait_cycles = max(
             5, int(rospy.get_param("~station_partner_wait_cycles", 20))
+        )
+        # Bounded wait for a room whose frontiers are exhausted while its
+        # camera coverage is still low.  0 keeps the validated pre-change
+        # behaviour (hold the lock); a positive value releases the room after
+        # that many planner cycles.  The experiment defaulted to 20 and is not
+        # part of the validated baseline.
+        self.room_frontier_wait_cycles = int(
+            rospy.get_param("~room_frontier_wait_cycles", 0)
         )
         self.latest_snapshot = None
         self.floor_complete = False
@@ -332,6 +360,16 @@ class CoverageExplorer:
         self.reviewed_hypotheses = set()
         self.next_sphere_id = 0
         self.sphere_min_hits = max(2, int(rospy.get_param("~sphere_min_hits", 3)))
+        # Danger-seeking: a partially observed red cluster already earns a
+        # review target instead of waiting for repeated hits.  Measured recall
+        # on the three-floor runs was 0.0-0.67 with zero false alarms, so the
+        # detection itself is precise and the misses come from never pointing
+        # the camera at the source.  Acting on the first observation steers the
+        # robot towards what it has already glimpsed.  Confirmation still needs
+        # the full sphere_min_hits count, so this cannot create false alarms.
+        self.danger_candidate_min_hits = max(
+            1, int(rospy.get_param("~danger_candidate_min_hits", 1))
+        )
         self.sphere_point_stride = max(1, int(rospy.get_param("~sphere_point_stride", 2)))
         self.sphere_process_period = max(
             0.20, float(rospy.get_param("~sphere_process_period", 0.50))
@@ -340,6 +378,18 @@ class CoverageExplorer:
         self.sphere_stale_duration = max(
             2.0, float(rospy.get_param("~sphere_stale_duration", 8.0))
         )
+        # Red-object-directed exploration.  The RGB-D danger detector publishes
+        # its still-unconfirmed red-blob tracks; each one becomes a review
+        # target so the fixed forward camera is deliberately pointed at a
+        # partially observed red object instead of waiting for the coverage
+        # sweep to stumble across it.  These hints are never written to
+        # detected_danger.json and never gate floor completion: only the
+        # detector's own shape/colour confirmation can do that.
+        self.detector_candidates = {}
+        self.detector_candidate_timeout = max(
+            2.0, float(rospy.get_param("~detector_candidate_timeout", 20.0))
+        )
+        self.detector_reviewed = set()
 
         self.status_pub = rospy.Publisher("/simnav/explorer_status", String, queue_size=3, latch=True)
         self.coverage_pub = rospy.Publisher("/simnav/coverage_status", String, queue_size=3, latch=True)
@@ -370,6 +420,10 @@ class CoverageExplorer:
         rospy.Subscriber("/simnav/camera_coverage", String, self._camera_callback, queue_size=2)
         rospy.Subscriber("/simnav/lio_map_transform", TransformStamped, self._alignment_callback, queue_size=1)
         rospy.Subscriber("/cloud_registered", PointCloud2, self._cloud_callback, queue_size=1)
+        rospy.Subscriber(
+            "/simnav/danger_candidates", String,
+            self._danger_candidate_callback, queue_size=2,
+        )
         self.control_timer = rospy.Timer(rospy.Duration(0.05), self._control)
         # Catch planner exceptions inside the callback.  An exception escaping
         # rospy.Timer terminates that timer thread and otherwise looks exactly
@@ -499,6 +553,8 @@ class CoverageExplorer:
             self.completed_topologies.clear()
             self.topology_states.clear()
             self.topology_miss_cycles.clear()
+            # A blocked room is retried a bounded number of times per floor.
+            self.room_retry_counts.clear()
             self.topology_portals.clear()
             self.portal_evidence.clear()
             self.portal_last_seen.clear()
@@ -669,6 +725,67 @@ class CoverageExplorer:
             for hypothesis_id in stale:
                 del self.sphere_hypotheses[hypothesis_id]
 
+    def _danger_candidate_callback(self, message):
+        """Accept the detector's unconfirmed red tracks as review hints."""
+        try:
+            payload = json.loads(message.data)
+        except (TypeError, ValueError):
+            return
+        now = rospy.Time.now().to_sec()
+        with self.lock:
+            for item in payload.get("candidates", []):
+                position = item.get("position") or []
+                if len(position) < 2:
+                    continue
+                candidate_id = "DET_{}".format(item.get("id"))
+                self.detector_candidates[candidate_id] = {
+                    "id": candidate_id,
+                    "center": (float(position[0]), float(position[1])),
+                    "hits": self.danger_candidate_min_hits,
+                    "last_seen": now,
+                    "observations": int(item.get("observations", 1)),
+                }
+            stale = [
+                candidate_id
+                for candidate_id, item in self.detector_candidates.items()
+                if now - item["last_seen"] > self.detector_candidate_timeout
+            ]
+            for candidate_id in stale:
+                del self.detector_candidates[candidate_id]
+
+    def _detector_candidates_locked(self):
+        now = rospy.Time.now().to_sec()
+        return [
+            {
+                "id": item["id"],
+                "center": item["center"],
+                "hits": self.danger_candidate_min_hits,
+                "last_seen": item["last_seen"],
+            }
+            for item in self.detector_candidates.values()
+            if item["id"] not in self.detector_reviewed
+            and now - item["last_seen"] <= self.detector_candidate_timeout
+        ]
+
+    def _update_detector_reviewed(self, grid, camera_seen):
+        """Retire a hint once the camera has actually covered its location."""
+        radius_cells = max(1, int(math.ceil(0.40 / grid.resolution)))
+        with self.lock:
+            candidates = list(self.detector_candidates.values())
+        for item in candidates:
+            if item["id"] in self.detector_reviewed:
+                continue
+            row, column = grid.world_to_cell(*item["center"][:2])
+            row_start, row_stop = max(0, row - radius_cells), min(camera_seen.shape[0], row + radius_cells + 1)
+            column_start, column_stop = max(0, column - radius_cells), min(camera_seen.shape[1], column + radius_cells + 1)
+            if row_start < row_stop and column_start < column_stop and np.any(
+                camera_seen[row_start:row_stop, column_start:column_stop]
+            ):
+                self.detector_reviewed.add(item["id"])
+                rospy.loginfo(
+                    "Camera reviewed danger-detector candidate %s", item["id"]
+                )
+
     def _camera_exploration_ready_locked(self):
         # Camera observations accumulate as soon as the task corridor is
         # established.  Corridor target selection remains lidar-only, but
@@ -818,7 +935,16 @@ class CoverageExplorer:
             # the same cell every time the map updates.
             if self.active_target is not None and self.active_target.kind != "SPHERE_REVIEW":
                 visited = visited + (tuple(self.active_target.target),)
-            spheres = self._stable_spheres()
+            # Partial observations are enough to dispatch a review target; the
+            # confirmation gate in _check_completion still uses the stable set.
+            spheres = [
+                dict(item)
+                for item in self.sphere_hypotheses.values()
+                if int(item.get("hits", 0)) >= self.danger_candidate_min_hits
+            ]
+            # Red-object-directed hints from the RGB-D detector take part in
+            # the same review path but stay out of the floor-completion gate.
+            spheres = spheres + self._detector_candidates_locked()
             reviewed = set(self.reviewed_hypotheses)
             topology_lock = self.topology_lock
             completed_topologies = tuple(self.completed_topologies)
@@ -835,6 +961,7 @@ class CoverageExplorer:
         camera_seen = self._camera_seen_grid(grid, pose, world_pose, points)
         with self.lock:
             self._update_reviewed(grid, camera_seen)
+            self._update_detector_reviewed(grid, camera_seen)
             reviewed = set(self.reviewed_hypotheses)
         plan = self.planner.plan(
             grid,
@@ -936,6 +1063,18 @@ class CoverageExplorer:
             door_search_changed = self._update_door_search(plan, target_active)
             self._check_completion()
             if self.floor_complete:
+                self._publish_status()
+                return
+            if (
+                plan.target is None
+                and not target_active
+                and not lifecycle_changed
+                and self._retry_blocked_room(plan)
+            ):
+                # The re-opened lock takes effect on the next planner cycle.
+                self._publish_path()
+                self._publish_markers()
+                self._publish_coverage_layers()
                 self._publish_status()
                 return
             if lifecycle_changed or transit_changed or door_search_changed:
@@ -1300,18 +1439,47 @@ class CoverageExplorer:
             return True
         # Never dispatch another topology while the robot is still inside this
         # room.  Keep the lock and let later map/camera updates expose another
-        # local frontier.
+        # local frontier.  (Validated pre-change behaviour: the bounded release
+        # below was an unvalidated experiment and is kept available only via
+        # room_frontier_wait_cycles > 0.)
         state["state"] = "EXPLORING"
         self.topology_miss_cycles[lock] = 0
-        rospy.logwarn_throttle(
-            5.0,
-            "Topology room %s has no executable frontier but local coverage is low "
-            "(laser=%.3f camera=%.3f); keeping room lock",
+        if self.room_frontier_wait_cycles <= 0:
+            rospy.logwarn_throttle(
+                5.0,
+                "Topology room %s has no executable frontier but local coverage is low "
+                "(laser=%.3f camera=%.3f); keeping room lock",
+                lock,
+                local.laser if local is not None else 0.0,
+                local.camera if local is not None else 0.0,
+            )
+            return False
+        idle = int(state.get("no_frontier_cycles", 0)) + 1
+        state["no_frontier_cycles"] = idle
+        if idle < self.room_frontier_wait_cycles:
+            rospy.logwarn_throttle(
+                5.0,
+                "Topology room %s has no executable frontier but local coverage is low "
+                "(laser=%.3f camera=%.3f); keeping room lock (%d/%d)",
+                lock,
+                local.laser if local is not None else 0.0,
+                local.camera if local is not None else 0.0,
+                idle,
+                self.room_frontier_wait_cycles,
+            )
+            return False
+        state["state"] = "BLOCKED"
+        state["no_frontier_cycles"] = 0
+        self.topology_lock = None
+        self.topology_region = "CORRIDOR"
+        rospy.logwarn(
+            "Topology room %s exhausted frontiers for %d cycles at camera=%.3f; "
+            "releasing the room lock",
             lock,
-            local.laser if local is not None else 0.0,
+            idle,
             local.camera if local is not None else 0.0,
         )
-        return False
+        return True
 
     def _mark_room_entered_locked(self):
         """Capture the narrow doorway crossing at control-loop frequency."""
@@ -1558,6 +1726,52 @@ class CoverageExplorer:
             min(self.door_search_step_distance, limit - self.door_search_travel),
             self.door_search_travel,
             limit,
+        )
+        return True
+
+    def _retry_blocked_room(self, plan):
+        """Re-open a blocked, unfinished room when nothing else is left.
+
+        The planner only emits targets for CONFIRMED topology owners.  A room
+        whose approach failed is parked as BLOCKED and its doorway is never
+        attempted again, so once the corridor is fully mapped the plan contains
+        no target at all.  Re-opening the least-covered blocked room resets that
+        room's miss counter and lock so the next planner cycle can produce a
+        fresh approach.  Bounded by ``max_room_retries`` so an unreachable room
+        cannot consume the whole run.
+        """
+        if plan is None or plan.target is not None or self.floor_complete:
+            return False
+        coverages = plan.topology_coverages or {}
+        candidates = []
+        for topology_id, state in self.topology_states.items():
+            if state.get("state") != "BLOCKED":
+                continue
+            if topology_id in self.completed_topologies:
+                continue
+            if not str(topology_id).startswith("ROOM"):
+                continue
+            retries = int(self.room_retry_counts.get(topology_id, 0))
+            if retries >= self.max_room_retries:
+                continue
+            local = coverages.get(topology_id)
+            combined = float(local.combined) if local is not None else 0.0
+            candidates.append((combined, topology_id, retries))
+        if not candidates:
+            return False
+        candidates.sort()
+        _combined, topology_id, retries = candidates[0]
+        self.room_retry_counts[topology_id] = retries + 1
+        self.topology_states.setdefault(topology_id, {})["state"] = "APPROACHING"
+        self.topology_states[topology_id]["targets"] = 0
+        self.topology_miss_cycles[topology_id] = 0
+        self.topology_lock = topology_id
+        self.topology_region = "ROOM_APPROACHING"
+        # The earlier failed checkpoint must not suppress the retry viewpoint.
+        self.blocked_targets.clear()
+        rospy.logwarn(
+            "Re-opening blocked room %s for approach retry %d/%d",
+            topology_id, retries + 1, self.max_room_retries,
         )
         return True
 
@@ -1847,7 +2061,7 @@ class CoverageExplorer:
         if abs(error) > 0.18:
             command.angular.z = math.copysign(min(0.35, self.turn_speed), error)
         elif front >= self.motion_stop_distance:
-            command.linear.x = self.motion_speed
+            command.linear.x = self.transit_speed
             command.angular.z = max(-0.10, min(0.10, 0.8 * error))
         self._publish_command(command)
 
@@ -2425,6 +2639,8 @@ class CoverageExplorer:
                 "topology_states": self.topology_states,
                 "portal_evidence": dict(self.portal_evidence),
                 "portal_confirm_cycles": self.portal_confirm_cycles,
+                "camera_union_points": len(self.camera_points_world),
+                "camera_union_limit": int(self.camera_points_memory_limit),
                 "room_coverages": room_coverages,
                 "observed_portals": observed_portals,
                 "actionable_portals": [

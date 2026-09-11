@@ -5,7 +5,7 @@
   <node pkg="simnav" type="coverage_explorer_node.py" name="coverage_explorer" output="screen">
     <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
     <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
-    <param name="initial_forward_speed" value="0.45"/>
+    <param name="initial_forward_speed" value="0.90"/>
     <param name="initial_centering_start_distance" value="10.5"/>
     <param name="elevator_detection_start_distance" value="4.0"/>
     <param name="elevator_detection_end_distance" value="10.5"/>
@@ -50,10 +50,12 @@
     <param name="target_replace_gain_ratio" value="1.30"/>
     <param name="target_replace_stall" value="8.0"/>
     <param name="room_completion_miss_cycles" value="3"/>
+    <param name="room_frontier_wait_cycles" value="0"/>
     <param name="portal_confirm_cycles" value="1"/>
     <!-- When no portal is visible, advance exactly one metre, stop, and
          rebuild portal evidence.  The three-metre phase cap ends just before
          the front doorway station and cannot leak into rear-room transit. -->
+    <param name="door_search_enabled" value="false"/>
     <param name="door_search_step_distance" value="1.0"/>
     <param name="door_search_wait_cycles" value="3"/>
     <param name="door_search_front_limit" value="3.0"/>
@@ -74,7 +76,7 @@
     <!-- Each room uses 10% lidar + 90% RGB-D combined coverage.  A floor is
          complete only after four rooms satisfy this threshold and the robot
          has returned to the corridor from each one. -->
-    <param name="room_combined_coverage_target" value="0.40"/>
+    <param name="room_combined_coverage_target" value="0.84"/>
     <param name="expected_rooms_per_floor" value="4"/>
     <!-- Complete the two rooms at the nearest confirmed opposing door station
          before the rear station is allowed to own a target. -->
@@ -85,21 +87,25 @@
     <!-- Faster room exploration; doorway crossing remains capped in
          coverage_explorer_node.py. -->
     <param name="motion_speed" value="0.60"/>
+    <param name="transit_speed" value="0.90"/>
     <param name="turn_speed" value="0.65"/>
 
     <!-- Completion is an AND gate; lidar cannot hide missing RGB-D view. -->
-    <param name="laser_coverage_target" value="0.40"/>
-    <param name="camera_coverage_target" value="0.40"/>
-    <param name="combined_coverage_target" value="0.40"/>
+    <param name="laser_coverage_target" value="0.95"/>
+    <param name="camera_coverage_target" value="0.85"/>
+    <param name="combined_coverage_target" value="0.84"/>
     <!-- RGB-D is the task sensor; lidar remains the navigation/frontier
          assistant.  Keep the harmonic gate so lidar cannot hide a camera
          blind spot, while giving camera information gain 80% of the target
          selection weight. -->
-    <param name="camera_weight" value="0.90"/>
+    <param name="camera_weight" value="0.95"/>
     <param name="completion_stable_duration" value="3.0"/>
 
     <!-- Stable 0.3 m low clusters become mandatory camera-review targets. -->
     <param name="sphere_min_hits" value="3"/>
+    <param name="danger_candidate_min_hits" value="1"/>
+    <!-- Unconfirmed RGB-D red tracks become review goals for this long. -->
+    <param name="detector_candidate_timeout" value="20.0"/>
     <param name="sphere_point_stride" value="2"/>
     <param name="sphere_process_period" value="0.50"/>
     <param name="sphere_review_hold" value="2.0"/>

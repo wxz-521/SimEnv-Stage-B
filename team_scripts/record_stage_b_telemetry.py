@@ -59,13 +59,22 @@ def euler(orientation):
 
 class TelemetryRecorder:
     def __init__(self, out_dir, window_seconds, roll_limit_deg, pitch_limit_deg,
-                 base_height):
+                 base_height, drop_threshold=0.15, drop_window=1.5,
+                 baseline_window=20.0, baseline_min_samples=20):
         self.lock = threading.Lock()
         self.start = time.time()
         self.out_dir = out_dir
         self.fall_roll_limit = math.radians(float(roll_limit_deg))
         self.fall_pitch_limit = math.radians(float(pitch_limit_deg))
         self.fall_base_height = float(base_height)
+        # The metric z estimate drifts monotonically downward on long runs
+        # (0.00072 m/s of sim time in run14), so an absolute height test just
+        # reports the drift.  Compare against a slow median instead, matching
+        # the transition node's detector.
+        self.fall_drop_threshold = float(drop_threshold)
+        self.fall_drop_window = max(0.3, float(drop_window))
+        self.fall_baseline_window = max(self.fall_drop_window, float(baseline_window))
+        self.fall_baseline_min_samples = int(baseline_min_samples)
         self.source = {}
         self.metric = {}
         self.imu = {}
@@ -179,7 +188,20 @@ class TelemetryRecorder:
         if abs(iroll) > self.fall_roll_limit or abs(ipitch) > self.fall_pitch_limit:
             return "IMU_ROLLED"
         if wz == wz and wz < self.fall_base_height:  # NaN-safe comparison
-            return "BASE_ON_GROUND"
+            recent = [
+                entry[7] for entry in self.buffer
+                if entry[0] >= row[0] - self.fall_drop_window and entry[7] == entry[7]
+            ]
+            baseline = sorted(
+                entry[7] for entry in self.buffer
+                if entry[0] >= row[0] - self.fall_baseline_window
+                and entry[7] == entry[7]
+            )
+            if len(baseline) >= self.fall_baseline_min_samples:
+                if (baseline[len(baseline) // 2] - wz) >= self.fall_drop_threshold:
+                    return "BASE_ON_GROUND"
+            if recent and (max(recent) - wz) >= self.fall_drop_threshold:
+                return "BASE_ON_GROUND"
         return None
 
     def _tick(self, _event):
@@ -221,9 +243,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--window-seconds", type=float, default=20.0)
-    parser.add_argument("--roll-limit-deg", type=float, default=60.0)
-    parser.add_argument("--pitch-limit-deg", type=float, default=60.0)
-    parser.add_argument("--base-height", type=float, default=0.15)
+    parser.add_argument("--roll-limit-deg", type=float, default=30.0)
+    parser.add_argument("--pitch-limit-deg", type=float, default=30.0)
+    parser.add_argument("--base-height", type=float, default=0.10)
+    parser.add_argument("--drop-threshold", type=float, default=0.15)
+    parser.add_argument("--drop-window", type=float, default=1.5)
+    parser.add_argument("--baseline-window", type=float, default=20.0)
+    parser.add_argument("--baseline-min-samples", type=int, default=20)
     args = parser.parse_args(rospy.myargv()[1:])
     rospy.init_node("stage_b_telemetry")
     recorder = TelemetryRecorder(
@@ -232,6 +258,10 @@ def main():
         args.roll_limit_deg,
         args.pitch_limit_deg,
         args.base_height,
+        args.drop_threshold,
+        args.drop_window,
+        args.baseline_window,
+        args.baseline_min_samples,
     )
     rospy.on_shutdown(recorder.shutdown)
     rospy.loginfo("Telemetry recording to %s", recorder.telemetry_path)

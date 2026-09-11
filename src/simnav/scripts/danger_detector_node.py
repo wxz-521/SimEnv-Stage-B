@@ -63,6 +63,14 @@ class DangerDetectorNode:
         self.floor_min_offset = float(rospy.get_param("~floor_min_offset", -0.2))
         self.floor_max_offset = float(rospy.get_param("~floor_max_offset", 1.2))
         self.moving_frequency = float(rospy.get_param("~moving_frequency", 5.0))
+        # Diagnostics for the RGB-D exploration chain: a stalled camera
+        # coverage number is otherwise indistinguishable between "no new
+        # geometry" and "frames silently dropped".
+        self.rgb_processed = 0
+        self.rgb_skipped_pose = 0
+        self.rgb_skipped_rate = 0
+        self.rgb_skipped_scope = 0
+        self.rgb_last_report = rospy.Time(0)
         self.scan_frequency = float(rospy.get_param("~scan_frequency", 15.0))
         self.last_process_time = rospy.Time(0)
         self.room_scanning = False
@@ -93,7 +101,7 @@ class DangerDetectorNode:
             8, int(rospy.get_param("~camera_observation_pixel_stride", 32))
         )
         self.camera_observation_max_cells = max(
-            100, int(rospy.get_param("~camera_observation_max_cells", 16000))
+            100, int(rospy.get_param("~camera_observation_max_cells", 200000))
         )
         self.camera_observed_cells = set()
         self.camera_observed_order = deque()
@@ -128,6 +136,15 @@ class DangerDetectorNode:
             "/simnav/camera_coverage", String, queue_size=1, latch=True
         )
         self.track_pub = rospy.Publisher("/simnav/danger_tracks", String, queue_size=1, latch=True)
+        # Unconfirmed red-blob tracks.  The Stage B explorer uses these as a
+        # red-object-directed exploration hint: a partial RGB-D observation is
+        # enough to drive to a viewpoint that faces the blob, which is the only
+        # way the fixed forward camera can re-observe a sphere that sits deep
+        # inside a room.  This topic is a hint, never a detection: the formal
+        # output still requires the full confirmation_frames + shape gates.
+        self.candidate_pub = rospy.Publisher(
+            "/simnav/danger_candidates", String, queue_size=1, latch=True
+        )
         self.confirmation_pub = rospy.Publisher(
             "/simnav/danger_confirmation_active", Bool, queue_size=1, latch=True
         )
@@ -425,16 +442,19 @@ class DangerDetectorNode:
         with self.lock:
             camera_exploration_active = self.camera_exploration_active
         if not camera_exploration_active:
+            self.rgb_skipped_scope += 1
             return
         frequency = self.scan_frequency if self.room_scanning else self.moving_frequency
         stamp = rgb_message.header.stamp if rgb_message.header.stamp != rospy.Time() else rospy.Time.now()
         if self.last_process_time != rospy.Time(0) and (stamp - self.last_process_time).to_sec() < 1.0 / frequency:
+            self.rgb_skipped_rate += 1
             return
         with self.lock:
             intrinsics = self.camera_info
         with self.result_lock:
             metric_pose = self.metric_pose
         if intrinsics is None or metric_pose is None:
+            self.rgb_skipped_pose += 1
             return
         tracking_x, tracking_y, tracking_yaw, tracking_roll, tracking_pitch = self._tracking_pose(
             metric_pose, stamp
@@ -684,6 +704,16 @@ class DangerDetectorNode:
         with self.result_lock:
             summary_cells = tuple(sorted(self.camera_observed_cells))
             ray_count = int(self.camera_observed_ray_count)
+        self.rgb_processed += 1
+        rospy.loginfo_throttle(
+            10.0,
+            "RGB-D chain: processed=%d skipped(scope=%d rate=%d pose=%d) scope=%s",
+            self.rgb_processed,
+            self.rgb_skipped_scope,
+            self.rgb_skipped_rate,
+            self.rgb_skipped_pose,
+            self.camera_scope_type,
+        )
         self.camera_coverage_pub.publish(
             String(
                 data=json.dumps(
@@ -793,7 +823,46 @@ class DangerDetectorNode:
 
     def _result_timer(self, event):
         del event
-        self._write_results(rospy.Time.now())
+        stamp = rospy.Time.now()
+        self._write_results(stamp)
+        self._publish_candidates(stamp)
+
+    def _publish_candidates(self, stamp):
+        """Publish fresh, still-unconfirmed red tracks as exploration hints."""
+        with self.result_lock:
+            tracks = list(self.tracker.tracks)
+            confirmation_frames = int(self.tracker.confirmation_frames)
+            floor_z = float(self.current_floor_z)
+        floor_min = float(self.floor_min_offset)
+        floor_max = float(self.floor_max_offset)
+        now = stamp.to_sec()
+        items = []
+        for track in tracks:
+            if int(track.observations) >= confirmation_frames:
+                continue
+            # Only the active floor's observations are useful to steer the
+            # explorer, and only while they are fresh enough to be re-observed.
+            if now - float(track.last_seen) > max(2.0, 2.0 * float(self.pending_timeout)):
+                continue
+            error = float(track.position_world[2]) - floor_z
+            if not (floor_min <= error <= floor_max):
+                continue
+            items.append(
+                {
+                    "id": int(track.track_id),
+                    "position": [round(float(value), 4) for value in track.position_world],
+                    "observations": int(track.observations),
+                    "last_seen": round(float(track.last_seen), 3),
+                }
+            )
+        self.candidate_pub.publish(
+            String(
+                data=json.dumps(
+                    {"frame_id": self.world_frame, "candidates": items},
+                    sort_keys=True,
+                )
+            )
+        )
 
     def _ensure_start_time(self, stamp):
         if self.start_time is None and stamp != rospy.Time(0):
