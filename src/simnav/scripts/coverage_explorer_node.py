@@ -385,22 +385,6 @@ class CoverageExplorer:
         self.sphere_stale_duration = max(
             2.0, float(rospy.get_param("~sphere_stale_duration", 8.0))
         )
-        # A *stable* lidar hypothesis (hits >= sphere_min_hits) used to live
-        # forever: `_check_completion` requires zero unreviewed hypotheses, so a
-        # hypothesis the camera never manages to cover blocks FLOOR_COMPLETE
-        # indefinitely and the robot loops back into an already-complete room.
-        # Observed on floor 0 of run22: rooms=4/4, ROOM_L_43 combined=0.887 and
-        # still re-approached at sim 565 s instead of latching the floor.
-        # Two bounded escapes: retire a stable hypothesis after this long
-        # without re-observation, and after this many review dispatches.
-        self.sphere_stable_stale_duration = max(
-            self.sphere_stale_duration,
-            float(rospy.get_param("~sphere_stable_stale_duration", 30.0)),
-        )
-        self.max_sphere_review_attempts = max(
-            1, int(rospy.get_param("~max_sphere_review_attempts", 3))
-        )
-        self.sphere_review_attempts = {}
         # Red-object-directed exploration.  The RGB-D danger detector publishes
         # its still-unconfirmed red-blob tracks; each one becomes a review
         # target so the fixed forward camera is deliberately pointed at a
@@ -756,16 +740,11 @@ class CoverageExplorer:
             stale = [
                 hypothesis_id
                 for hypothesis_id, item in self.sphere_hypotheses.items()
-                if now - item["last_seen"]
-                > (
-                    self.sphere_stale_duration
-                    if item["hits"] < self.sphere_min_hits
-                    else self.sphere_stable_stale_duration
-                )
+                if item["hits"] < self.sphere_min_hits
+                and now - item["last_seen"] > self.sphere_stale_duration
             ]
             for hypothesis_id in stale:
                 del self.sphere_hypotheses[hypothesis_id]
-                self.sphere_review_attempts.pop(hypothesis_id, None)
 
     def _danger_candidate_callback(self, message):
         """Accept the detector's unconfirmed red tracks as review hints."""
@@ -1198,11 +1177,6 @@ class CoverageExplorer:
                 self.active_target_last_progress = self.path_index
                 self.active_target_last_progress_stamp = rospy.Time.from_sec(now)
                 self.active_target_last_distance = None
-                if plan.target.kind == "SPHERE_REVIEW" and plan.target.hypothesis_id:
-                    key = str(plan.target.hypothesis_id)
-                    self.sphere_review_attempts[key] = (
-                        self.sphere_review_attempts.get(key, 0) + 1
-                    )
                 if (
                     plan.target.topology_id != "CORRIDOR"
                     and "UNASSIGNED" not in plan.target.topology_id
@@ -1880,46 +1854,41 @@ class CoverageExplorer:
         return True
 
     def _check_completion(self):
-        unreviewed = []
-        for item in self._stable_spheres():
-            if item["id"] in self.reviewed_hypotheses:
-                continue
-            attempts = int(self.sphere_review_attempts.get(str(item["id"]), 0))
-            if attempts >= self.max_sphere_review_attempts:
-                # The review was dispatched several times and the camera still
-                # never covered the hypothesis.  A single uncoverable lidar
-                # cluster must not block FLOOR_COMPLETE forever (run22: rooms
-                # 4/4, floor never latched, already-complete room re-approached
-                # for 200+ s).  The RGB detector remains the primary danger
-                # path; retire the hint and log it loudly.
-                self.reviewed_hypotheses.add(item["id"])
-                rospy.logwarn(
-                    "Retiring lidar sphere hypothesis %s after %d review attempts "
-                    "(camera never covered it); floor completion unblocked",
-                    item["id"],
-                    attempts,
-                )
-                continue
-            unreviewed.append(item)
+        unreviewed = [
+            item for item in self._stable_spheres() if item["id"] not in self.reviewed_hypotheses
+        ]
+        # Floor completion depends only on the four rooms reaching COMPLETE.
+        # A stable lidar sphere hypothesis whose cell the camera never covers
+        # must not block the floor: the RGB-D danger detector is the task
+        # sensor, and gating on the lidar hint made the robot loop back into an
+        # already-complete room (run22: rooms 4/4, floor never latched, 200+ s
+        # wasted).  The unreviewed count is kept as a diagnostic only.
         meets = topology_completion_ready(
             self.completed_topologies,
             self.expected_rooms_per_floor,
-            len(unreviewed),
+            0,
         )
         now = rospy.Time.now()
-        # A completed floor that never latches is otherwise invisible: the run
-        # simply stops exploring and the elevator waits on floor_complete.
-        # Report the predicate inputs whenever they disagree with the count.
+        # A completed floor that never latches is otherwise invisible.  Report
+        # the predicate inputs; unreviewed lidar hints no longer block the gate
+        # but are still worth seeing.
         rooms = len(self.completed_topologies)
         if rooms >= int(self.expected_rooms_per_floor) and not meets:
             rospy.logwarn_throttle(
                 5.0,
-                "Completion blocked: rooms=%d/%d unreviewed=%d stable=%d reviewed=%d",
+                "Completion blocked by topology state: rooms=%d/%d unreviewed=%d stable=%d reviewed=%d",
                 rooms,
                 int(self.expected_rooms_per_floor),
                 len(unreviewed),
                 len(self._stable_spheres()),
                 len(self.reviewed_hypotheses),
+            )
+        elif rooms >= int(self.expected_rooms_per_floor) and unreviewed:
+            rospy.loginfo_throttle(
+                10.0,
+                "Floor completion proceeding with %d unreviewed lidar hint(s) "
+                "(RGB-D detector is the danger path)",
+                len(unreviewed),
             )
         if not meets:
             self.completion_since = None

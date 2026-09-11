@@ -233,7 +233,6 @@ def main():
                 else True
             )
             and completed_rooms_ok
-            and not latest.get("unreviewed_sphere_hypotheses", [])
             and max_pose_step < 1.0
         )
     payload = {
