@@ -204,6 +204,11 @@ class ElevatorTransition:
             10.0, float(rospy.get_param("~route_unreachable_timeout", 60.0))
         )
         self.route_retry_since = None
+        # After this long without an A* route, drive open-loop toward the target
+        # (clearance-gated) while A* keeps replanning.
+        self.route_open_loop_grace = max(
+            0.0, float(rospy.get_param("~route_open_loop_grace", 6.0))
+        )
         self.route_accept_distance = max(
             0.2, float(rospy.get_param("~route_accept_distance", 1.2))
         )
@@ -757,6 +762,43 @@ class ElevatorTransition:
                         )
                     )
                     return False
+                # Bounded open-loop recovery.  A* runs on the inflated
+                # navigation map; a mapped pinch (e.g. the robot's own trail
+                # along the corridor centreline, which closes the corridor once
+                # it is inflated) can leave the start cell in a pocket the robot
+                # can physically drive out of.  After a short grace, drive
+                # toward the target along its bearing with the same lateral
+                # centring used elsewhere, gated by the front clearance, while
+                # A* keeps replanning every route_replan_period.  This is not a
+                # criteria change and has no persistent state.
+                if (
+                    unreachable_for >= self.route_open_loop_grace
+                    and self.front_clearance >= self.stop_distance
+                ):
+                    heading = target_heading(pose, target)
+                    heading_error = normalize_angle(heading - pose[2])
+                    lateral = 0.0
+                    if (
+                        math.isfinite(self.left_clearance)
+                        and math.isfinite(self.right_clearance)
+                    ):
+                        lateral = max(
+                            -0.15,
+                            min(0.15, 0.10 * (self.right_clearance - self.left_clearance)),
+                        )
+                    self._publish_command(
+                        self.lobby_approach_speed,
+                        max(-0.25, min(0.25, 0.8 * heading_error + lateral)),
+                    )
+                    rospy.logwarn_throttle(
+                        5.0,
+                        "Open-loop recovery toward (%.2f, %.2f) in %s "
+                        "(no A* route for %.1fs, front=%.2f)",
+                        target[0], target[1], self.state,
+                        unreachable_for, self.front_clearance,
+                    )
+                    return False
+                self._stop()
                 rospy.logwarn_throttle(
                     5.0,
                     "A* has no route to mapped target (%.2f, %.2f) in %s; "

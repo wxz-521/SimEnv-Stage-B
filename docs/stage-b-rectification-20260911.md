@@ -287,7 +287,27 @@ run22（three_floor，0.84，按用户要求中途停止）在 floor 0 出现异
 （`danger_early_exit_coverage` 保持 0）。
 
 
-## 11. 产物
+## 11. run24（三层 0.84）与 RETURN_TO_ELEVATOR 地图盲区
+
+run24 结果：**floor 0 latch 成功**（4 房，简化后的 latch 规则生效），危险源命中 id10/id5
+（floor 0 2/3），但电梯在 `RETURN_TO_ELEVATOR` 卡 60 s 后
+`MISSION_FAULT: ROUTE_UNREACHABLE_RETURN_TO_ELEVATOR_AFTER_60S`。
+
+根因（用 run24 保存的 `exploration_map.pgm` 直接验证）：
+- 机器人 floor 0 完成后停在 `src (32.07, 0.49)`；run6（0.40）在同一位置
+  `RETURN_TO_ELEVATOR` **成功**过（起点 src 32.29,0.42），所以不是位置差异；
+- 对保存的原始地图做连通性分析：不膨胀时 start→goal 连通；**膨胀 0.1 m 仍连通、
+  0.2 m 起起点被封、0.3 m 起可达域只剩 850 格的小口袋**（与导航图 0.30 m 膨胀一致）。
+  即走廊中线存在一条被建图成障碍的窄带（最可能是自身体/腿点云残留），膨胀后截断走廊，
+  电梯 A* 起点落进死口袋 → 永远无路径。
+
+修复（简单、有界、非黑名单、不改判据）：
+- 新增 `route_open_loop_grace=6 s`：A* 连续无路径超过该宽限后，沿目标方位以
+  `lobby_approach_speed` 做**开环走廊恢复**（左右 clearance 横向居中，
+  `front_clearance >= stop_distance` 作为避障门限），A* 仍每 `route_replan_period` 重规划，
+  一旦有路径立即恢复循迹；总时长仍由 `route_unreachable_timeout=60 s` 兜底。
+
+## 12. 产物
 
 - `logs/run20_single084_reddiag_20260911/seed_20260902/`：**单层 0.84 通过轮**（4 房 + 3/3 红球 + 0 虚警，359.2 s）。
 - `logs/run21_three_084_20260911/seed_20260902/`：三层端到端轮（floor 0 完成，floor 1 地图交接处 route 超时 fault）。
