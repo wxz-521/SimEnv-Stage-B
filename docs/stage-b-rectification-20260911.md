@@ -184,7 +184,17 @@ area 1678→2938→4678、circularity 0.81→0.87→0.90、半径 27→33→40�
 
 ### 2.7 run20（moving_frequency=10 + 诊断）
 
-（待运行结束后填写）
+结果（`logs/run20_single084_reddiag_20260911/seed_20260902/result.json`）：
+
+- `passed=True`，`floor_complete=True`，**4/4 房**（ROOM_L_15 / ROOM_L_43 / ROOM_R_15 / ROOM_R_43）
+- `elapsed_sim=359.194 s`（历史 0.84 单层基准 334.8 s，同量级）
+- 危险源评估：`correct=3, missed=0, false_alarms=0, recall=1.0, passed=True`（floor 0 真值 3 个红球全部命中）
+- 三条确认轨迹：id0=(-6.33,18.72)↔id1 偏差 0.53 m；id1=(-1.28,31.32)↔id5 偏差 0.58 m；
+  id2=(9.44,25.93)↔id10 偏差 0.66 m
+
+**即 0.84 覆盖率判据 + 3/3 红球召回 + 0 虚警 同时达成（单层，seed 20260902）。**
+注意：本次运行仍使用 `floor_min_offset=-0.2`（-0.6 的放宽是运行开始后才改的）；
+三条轨迹的 z 分别为 -0.08 / -0.18 / -0.17，已贴近 -0.2 边界，放宽后更安全。
 
 ## 4. 红球引导：分级、渐进（2026-09-11 追加）
 
