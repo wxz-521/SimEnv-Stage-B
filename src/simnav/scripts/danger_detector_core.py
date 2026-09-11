@@ -55,6 +55,13 @@ class RedBallDetector:
             "contour_pass": 0,
             "depth_pass": 0,
             "observations": 0,
+            "mask_pixels": 0,
+            "largest_area": 0.0,
+            "largest_circularity": 0.0,
+            "largest_aspect": 0.0,
+            "largest_extent": 0.0,
+            "largest_radius": 0.0,
+            "reject_reason": "NONE",
         }
 
     def detect(self, image_bgr, depth_meters, intrinsics):
@@ -63,8 +70,16 @@ class RedBallDetector:
             "contour_pass": 0,
             "depth_pass": 0,
             "observations": 0,
+            "mask_pixels": 0,
+            "largest_area": 0.0,
+            "largest_circularity": 0.0,
+            "largest_aspect": 0.0,
+            "largest_extent": 0.0,
+            "largest_radius": 0.0,
+            "reject_reason": "NONE",
         }
         if image_bgr is None or depth_meters is None or image_bgr.shape[:2] != depth_meters.shape[:2]:
+            self.last_stats["reject_reason"] = "SHAPE_MISMATCH"
             return []
         hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
         lower_red = cv2.inRange(hsv, np.array([0, 90, 60]), np.array([10, 255, 255]))
@@ -75,11 +90,26 @@ class RedBallDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
         self.last_stats["red_mask_found"] = len(contours)
+        self.last_stats["mask_pixels"] = int(np.count_nonzero(mask))
         observations = []
         for contour in contours:
             area = float(cv2.contourArea(contour))
             perimeter = float(cv2.arcLength(contour, True))
+            if area > float(self.last_stats["largest_area"]):
+                if perimeter > 1e-6:
+                    circularity = 4.0 * math.pi * area / (perimeter * perimeter)
+                else:
+                    circularity = 0.0
+                _, _, width, height = cv2.boundingRect(contour)
+                self.last_stats["largest_area"] = area
+                self.last_stats["largest_circularity"] = circularity
+                self.last_stats["largest_aspect"] = width / float(max(height, 1))
+                self.last_stats["largest_extent"] = area / float(max(width * height, 1))
+                self.last_stats["largest_radius"] = float(
+                    cv2.minEnclosingCircle(contour)[1]
+                )
             if area < self.min_area or perimeter <= 1e-6:
+                self.last_stats["reject_reason"] = "AREA"
                 continue
             circularity = 4.0 * math.pi * area / (perimeter * perimeter)
             _, _, width, height = cv2.boundingRect(contour)
@@ -87,12 +117,15 @@ class RedBallDetector:
             extent = area / float(max(width * height, 1))
             (center_x, center_y), radius = cv2.minEnclosingCircle(contour)
             if circularity < self.min_circularity or not 0.78 <= aspect <= 1.28:
+                self.last_stats["reject_reason"] = "SHAPE"
                 continue
             if extent > 0.88 or not self.min_radius <= radius <= self.max_radius:
+                self.last_stats["reject_reason"] = "SIZE_EXTENT"
                 continue
             self.last_stats["contour_pass"] += 1
             depth = self._center_depth(depth_meters, center_x, center_y, radius)
             if depth is None:
+                self.last_stats["reject_reason"] = "DEPTH"
                 continue
             self.last_stats["depth_pass"] += 1
             camera_x = (center_x - intrinsics.cx) * depth / intrinsics.fx

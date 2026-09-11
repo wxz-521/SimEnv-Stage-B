@@ -71,6 +71,15 @@ class DangerDetectorNode:
         self.rgb_skipped_rate = 0
         self.rgb_skipped_scope = 0
         self.rgb_last_report = rospy.Time(0)
+        # Red-detection aggregate diagnostics (see _image_callback).
+        self.frames_processed = 0
+        self.red_frames = 0
+        self.red_mask_pixels = 0
+        self.contour_pass_total = 0
+        self.depth_pass_total = 0
+        self.tf_rejected_total = 0
+        self.floor_rejected_total = 0
+        self.last_red_stats = {}
         self.scan_frequency = float(rospy.get_param("~scan_frequency", 15.0))
         self.last_process_time = rospy.Time(0)
         self.room_scanning = False
@@ -543,6 +552,18 @@ class DangerDetectorNode:
                 str(track.track_id): track.observations for track in self.tracker.tracks
             }
         stats = dict(self.detector.last_stats)
+        # Aggregate red-detection diagnostics.  Without these a zero recall is
+        # indistinguishable between "no red pixel ever entered the frame",
+        # "red was seen but the shape gate rejected it" and "depth invalid".
+        self.red_frames += 1 if int(stats.get("red_mask_found", 0)) > 0 else 0
+        self.red_mask_pixels += int(stats.get("mask_pixels", 0))
+        self.contour_pass_total += int(stats.get("contour_pass", 0))
+        self.depth_pass_total += int(stats.get("depth_pass", 0))
+        self.tf_rejected_total += int(tf_rejected)
+        self.floor_rejected_total += int(floor_rejected)
+        if int(stats.get("red_mask_found", 0)) > 0:
+            self.last_red_stats = dict(stats)
+        self.frames_processed += 1
         lifecycle = {
             "timestamp": stamp.to_sec(),
             "red_mask_found": int(stats.get("red_mask_found", 0)),
@@ -707,12 +728,22 @@ class DangerDetectorNode:
         self.rgb_processed += 1
         rospy.loginfo_throttle(
             10.0,
-            "RGB-D chain: processed=%d skipped(scope=%d rate=%d pose=%d) scope=%s",
+            "RGB-D chain: processed=%d skipped(scope=%d rate=%d pose=%d) scope=%s | "
+            "red: frames=%d red_frames=%d mask_px=%d contour_pass=%d depth_pass=%d "
+            "tf_rej=%d floor_rej=%d last_red=%s",
             self.rgb_processed,
             self.rgb_skipped_scope,
             self.rgb_skipped_rate,
             self.rgb_skipped_pose,
             self.camera_scope_type,
+            self.frames_processed,
+            self.red_frames,
+            self.red_mask_pixels,
+            self.contour_pass_total,
+            self.depth_pass_total,
+            self.tf_rejected_total,
+            self.floor_rejected_total,
+            json.dumps(self.last_red_stats, sort_keys=True),
         )
         self.camera_coverage_pub.publish(
             String(

@@ -149,6 +149,41 @@ two/three_floor 用 `--floor-index -1` 评估全楼层真值（5 个红球），
 
 ### 2.5 run19（coverage/single floor, 0.84, 基线回退后）
 
+结果：`floor_complete=True`，**4/4 房完成**（ROOM_L_15/ROOM_L_43/ROOM_R_15/ROOM_R_42），
+`elapsed_sim=355.1 s`（历史 0.84 单层基准 334.8 s，同量级），`mission_fault=None`。
+但危险源 `recall=0/3`（detected 0，missed 3，虚警 0）。基线回退修好了完成度，红球召回是下一个缺口。
+
+### 2.6 红球召回根因（run19 遥测 + run20 在线探针）
+
+先用 run19 遥测做几何复盘：三个红球**都曾进入前视相机视场**（60° HFOV、深度 <8 m）——
+id1 最近 3.45 m、id5 2.36 m、id10 0.26 m，且各自存在正对（方位误差≈0°）的采样
+（id1 sim 78.6 @6.17 m、id5 sim 294.0 @5.63 m、id10 sim 261.3 @0.91 m）。
+所以不是"相机没看到"，而是检测环节丢掉了。
+
+为定位，给 `danger_detector_core/node` 增加逐帧聚合诊断（red_mask 帧数、mask 像素、
+contour_pass、depth_pass、tf_reject、floor_reject、最大轮廓的 area/circularity/aspect/extent/radius）。
+run20（moving_frequency 5→10）实测：
+- `red_frames` 持续增长、`contour_pass` 增长、随后 `depth_pass=11`、`floor_rej=11`；
+- `results/detected_danger_debug.json` 出现**已确认轨迹 id0 = (-6.33, 18.72, -0.08)**
+  （真值 id1 = (-6.858, 18.695)，偏差 0.53 m，10 次观测）。
+
+在线探针（对同一帧跑检测器 + 打印红轮廓指标）显示：红球轮廓会随接近从
+area 1678→2938→4678、circularity 0.81→0.87→0.90、半径 27→33→40，
+且轮廓中心处深度 **361/361、625/625、841/841 全部有效**。即：球能被干净地看到并测到深度。
+
+因此本轮真正的两个损失点：
+1. **抽帧率**：5 Hz 门限把"球恰好通过视野"的帧大量丢掉（run11 曾记录 rate skip≈10119）。
+   提高到 10 Hz（只减少丢帧，不放宽颜色/形状/3 帧确认门）后，run20 立即检出 id1。
+2. **楼层高度带**：`floor_min_offset=-0.2` 把投影 z≈-0.08 的观测判为"不在本层"
+   （floor_rej=11，恰好等于 depth_pass 数）。metric z 是层内相对量且长跑下漂
+   （0.33→0.07 m），因此把下界放宽到 **-0.6**（上界仍 1.2）。
+
+（说明：期间一度怀疑 RGB 与深度图上下翻转——在线统计 `same_row=0/289`、`flipped_row=289/289`；
+但抓取实帧直接查看后确认两图**对齐**，顶部为超出 8 m 远裁剪的 NaN 区域，
+翻转假设不成立，未据此改代码。）
+
+### 2.7 run20（moving_frequency=10 + 诊断）
+
 （待运行结束后填写）
 
 ## 4. 红球引导：分级、渐进（2026-09-11 追加）

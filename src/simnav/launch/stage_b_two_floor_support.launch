@@ -10,6 +10,8 @@
     <param name="confirmation_frames" value="3"/>
     <param name="cluster_radius" value="0.75"/>
     <param name="moving_frequency" value="10.0"/>
+    <param name="floor_min_offset" value="-0.6"/>
+    <param name="floor_max_offset" value="1.2"/>
     <param name="camera_observation_markers_enabled" value="true"/>
     <param name="camera_observation_resolution" value="0.25"/>
     <param name="camera_observation_pixel_stride" value="32"/>
