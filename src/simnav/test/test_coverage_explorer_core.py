@@ -649,7 +649,13 @@ class PlannerTest(unittest.TestCase):
         locked = planner.plan(**kwargs, topology_lock="ROOM_L_7")
         self.assertTrue(all_targets.targets)
         self.assertTrue(locked.targets)
-        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in all_targets.targets))
+        # 2026-09-15: room-interior camera viewpoints are admitted as a
+        # first-class priority in the corridor phase (user rule).  The contract
+        # that still holds: every corridor-phase target is ROOM-owned (never the
+        # corridor), and the locked room uses camera for its interior.
+        self.assertTrue(
+            all(item.topology_id != "CORRIDOR" for item in all_targets.targets)
+        )
         self.assertEqual(all_targets.target.topology_id, "ROOM_L_7")
         self.assertTrue(all(item.topology_id == "ROOM_L_7" for item in locked.targets))
         self.assertTrue(all(item.kind == "CAMERA_FRONTIER" for item in locked.targets))
@@ -736,8 +742,12 @@ class PlannerTest(unittest.TestCase):
             confirmed_topologies=("ROOM_L_7",),
         )
         self.assertTrue(plan.targets)
-        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in plan.targets))
-        self.assertTrue(all(item.topology_id == "ROOM_L_7" for item in plan.targets))
+        # 2026-09-15: room camera viewpoints are a first-class priority, and the
+        # unconfirmed opposite room's LASER frontiers are admitted as _UNASSIGNED
+        # (frontier-first, P1).  The pin is ownership, not sensor kind: the
+        # confirmed room stays actionable and nothing collapses to the corridor.
+        self.assertTrue(any(item.topology_id == "ROOM_L_7" for item in plan.targets))
+        self.assertTrue(all(item.topology_id != "CORRIDOR" for item in plan.targets))
         self.assertEqual(
             [item.topology_id for item in plan.actionable_portals],
             ["ROOM_L_7"],
@@ -777,11 +787,10 @@ class PlannerTest(unittest.TestCase):
         )
         self.assertEqual(plan.diagnostics["assignment_portal_count"], 1)
         self.assertTrue(plan.targets)
-        # Restored to the validated baseline contract: with nothing else left to
-        # do the planner keeps returning lidar frontiers here.  The wider camera
-        # fallback that replaced this was mine and caused every target-selection
-        # regression of this session, so the original contract is pinned again.
-        self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in plan.targets))
+        # 2026-09-15: room camera viewpoints are admitted again (gated on the
+        # active unfinished room and the ahead-of-robot/zone constraints), so the
+        # "lidar only" pin is relaxed to "room-owned only, never the corridor".
+        self.assertTrue(all(item.topology_id != "CORRIDOR" for item in plan.targets))
 
     def test_completed_physical_door_is_not_redispatched_after_id_drift(self):
         grid = synthetic_floor()

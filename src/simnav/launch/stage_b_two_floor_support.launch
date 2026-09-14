@@ -43,14 +43,16 @@
          flat-ground policy 0.45 m/s crossed only 1/3. -->
     <param name="crossing_speed" value="0.45"/>
     <param name="lobby_approach_speed" value="0.45"/>
-    <!-- Known car-door geometry, world frame: [x, y, yaw, width] with the yaw
-         pointing through the doorway into the car (from generated_building/
-         elevator_config.yaml: door plane x=1.65, car centred on y=2.60, 1.40 m
-         clear opening - the same numbers elevator_only_test.sh passes as
-         _elevator_door).  The map-derived portal is the 3.50 m LOBBY opening and
-         its centre was 0.41 m off the real door on floor 1, which made the return
-         entry clip the jamb and ride from outside the car (run152). -->
+    <!-- The elevator is identified ONLY through the temporally-confirmed map
+         candidate (detect_wide_lobby_openings), like the standalone faithful
+         test.  The reference below is ONLY a sanity yardstick: a candidate that
+         is too far sideways / rotated / wrong-sized from it is rejected; it is
+         never used to drive. -->
     <param name="elevator_door" value="[1.65, 2.60, 0.0, 1.40]"/>
+    <param name="elevator_candidate_max_lateral" value="0.60"/>
+    <param name="elevator_candidate_max_yaw" value="0.25"/>
+    <param name="elevator_candidate_min_width" value="0.90"/>
+    <param name="elevator_candidate_max_width" value="3.80"/>
     <!-- How far past the door plane the robot must be before a ride starts. -->
     <param name="elevator_door_inset" value="0.35"/>
     <param name="entry_outside_retry_limit" value="2"/>

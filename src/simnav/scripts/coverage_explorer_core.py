@@ -2803,6 +2803,7 @@ class TaskCoveragePlanner:
             # localise.
             "generated_kind_counts": {},
             "corridor_camera_fallback": 0,
+            "room_camera_priority": 0,
             "locked_topology_family": [],
             "verified_door_band_cells": verified_band_cells,
             "verified_door_portals": verified_door_ids,
@@ -3374,6 +3375,7 @@ class TaskCoveragePlanner:
             )
         }
         interior_only = bool(interior_only)
+        room_camera = []
         if topology_lock:
             before_topology_filter = len(targets)
             # Portal ids are 0.5 m longitudinal bins of one physical doorway
@@ -3474,6 +3476,14 @@ class TaskCoveragePlanner:
                         and in_active_zone(item.target)
                     )
                     or item.topology_id in zone_topology_ids
+                    # Frontier-first (P1): a laser frontier in a side room whose
+                    # doorway is not confirmed yet carries an _UNASSIGNED owner.
+                    # It must still attract the robot into the room; the doorway
+                    # only assigns the coverage bookkeeping afterwards.
+                    or (
+                        str(item.topology_id).endswith("_UNASSIGNED")
+                        and in_active_zone(item.target)
+                    )
                 )
             ]
             detector_reviews = (
@@ -3499,6 +3509,42 @@ class TaskCoveragePlanner:
             )
             diagnostics["corridor_camera_crossing"] = len(corridor_camera)
             targets = corridor_frontiers + corridor_camera + detector_reviews
+            # 2026-09-15: room-interior camera viewpoints are a FIRST-CLASS
+            # priority, not only a last-resort fallback (user rule).  The old
+            # "camera fallback only when the laser pool is empty" baseline left
+            # the explorer stuck in the far corridor (run170): ghost laser
+            # frontiers in a COMPLETED front room kept the pool non-empty, so the
+            # rear-room camera viewpoints were never admitted and the planner
+            # reported NO_FRONTIER with clear targets right in front of it.
+            # The earlier "widen the pool" attempt regressed only because it
+            # admitted camera viewpoints WITHOUT the constraints below (walked to
+            # the lobby, back into a finished room, toured the corridor, picked
+            # far points at a doorway).  Each regression is a constraint here:
+            # room-only, unfinished, active zone, ahead of the gate and robot.
+            cosine, sine = math.cos(float(forward_yaw)), math.sin(float(forward_yaw))
+            room_camera = (
+                [
+                    item
+                    for item in unfiltered_targets
+                    if item.kind == "CAMERA_FRONTIER"
+                    and item.topology_id != "CORRIDOR"
+                    and "UNASSIGNED" not in str(item.topology_id)
+                    and str(item.topology_id) not in completed
+                    and in_active_zone(item.target)
+                    and (
+                        (item.target[0] - float(gate_center[0])) * cosine
+                        + (item.target[1] - float(gate_center[1])) * sine
+                    ) >= -0.5
+                    and (
+                        (item.target[0] - float(robot_pose[0])) * cosine
+                        + (item.target[1] - float(robot_pose[1])) * sine
+                    ) >= -0.5
+                ]
+                if active_station_topologies
+                else []
+            )
+            targets = targets + room_camera
+            diagnostics["room_camera_priority"] = len(room_camera)
             # Run the camera fallback whenever no surviving target belongs to a
             # room -- not only when the list is empty.  On an upper floor the
             # laser often produces exactly one corridor frontier (the rooms are
@@ -3699,12 +3745,24 @@ class TaskCoveragePlanner:
                     )
             else:
                 diagnostics["fixed_step_transit"] = 0
-                targets.sort(
-                    key=lambda item: (
-                        -projected_travel(robot_pose, item.target, forward_yaw),
-                        item.path_length,
+                if room_camera:
+                    # 2026-09-15: with room camera viewpoints admitted, enter the
+                    # NEAREST unfinished room instead of pushing forward (the old
+                    # farthest-projected-travel key dispatched a far room from the
+                    # doorway - the regression the single gate warns about).
+                    targets.sort(
+                        key=lambda item: (
+                            abs(along_of(item.target) - along_of(robot_pose)),
+                            item.path_length,
+                        )
                     )
-                )
+                else:
+                    targets.sort(
+                        key=lambda item: (
+                            -projected_travel(robot_pose, item.target, forward_yaw),
+                            item.path_length,
+                        )
+                    )
         # Keep the complete map-derived pool for diagnostics, even though
         # dispatch/ranking below uses only confirmed topology ownership.
         diagnostic_topologies = tuple(
@@ -4086,3 +4144,86 @@ def detect_sphere_like_clusters(
             continue
         clusters.append(tuple(float(value) for value in np.mean(cluster, axis=0)))
     return tuple(clusters)
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-15: collision detection / retreat, and the "map trapped" alarm.
+#
+# The explorer had no retreat action at all: on a front-clearance collision or
+# on "target held but no displacement" it only stopped and blacklisted the
+# target.  In a dead end that leaves the robot physically wedged, and because
+# the planner turns-then-drives it can never pick an action that reverses out
+# (run168 floor 1: wedged against a wall with a room still outstanding).  These
+# helpers are pure so the decision rules can be pinned by unit tests.
+# ---------------------------------------------------------------------------
+
+
+def collision_impact_detected(
+    accel_norm,
+    accel_baseline,
+    gyro_norm,
+    accel_delta=5.0,
+    gyro_threshold=3.0,
+):
+    """Whether one IMU sample looks like a physical impact.
+
+    A leg into a wall shows up as a sharp step in the specific force magnitude
+    (the base decelerates much faster than walking ever does) alongside a body
+    rate spike.  Either term alone is enough; requiring both would miss a
+    glancing hit that mostly translates and a corner strike that mostly yaws.
+    ``accel_baseline`` is the slow walking baseline, so the test is a step
+    relative to it and cannot fire from the constant part of gravity.
+    """
+    if accel_norm is None:
+        return False
+    if accel_baseline is not None and abs(float(accel_norm) - float(accel_baseline)) >= float(accel_delta):
+        return True
+    if gyro_norm is not None and abs(float(gyro_norm)) >= float(gyro_threshold):
+        return True
+    return False
+
+
+def retreat_trail_target(trail, pose, distance):
+    """Pick the breadcrumb ``distance`` metres back along the traversed trail.
+
+    The robot drives into dead ends along a path it has already proven free, so
+    the escape direction is back along that path, not "wherever the nose points
+    plus pi".  ``trail`` is an oldest-first sequence of ``(x, y)`` breadcrumbs;
+    the returned point is the newest crumb at least ``distance`` along the trail
+    behind the robot, or the oldest crumb when the trail is shorter than that
+    (a bounded reverse is still better than none).
+    """
+    if not trail:
+        return None
+    walked = 0.0
+    previous = (float(pose[0]), float(pose[1]))
+    for crumb in reversed(tuple(trail)):
+        x, y = float(crumb[0]), float(crumb[1])
+        walked += ((x - previous[0]) ** 2 + (y - previous[1]) ** 2) ** 0.5
+        if walked >= float(distance):
+            return (x, y)
+        previous = (x, y)
+    x, y = float(trail[0][0]), float(trail[0][1])
+    return (x, y)
+
+
+def map_is_trapped(
+    reachable_cells, end_pose_clearance, outstanding_rooms, minimum_cells=8
+):
+    """Whether the robot is walled in by its own map with work still to do.
+
+    ``navigation_reachable_cells`` collapsing to a handful of cells (or the
+    start cell losing all clearance) while a room is still outstanding means no
+    planner change can produce an action: the map itself has to be repaired or
+    the robot physically moved.  Alarm it explicitly instead of logging
+    ``NO_FRONTIER`` for ever (run168 floor 1: reachable 3, clearance 0.0).
+    """
+    if not outstanding_rooms:
+        return False
+    if reachable_cells is None:
+        return False
+    if int(reachable_cells) < int(minimum_cells):
+        return True
+    if end_pose_clearance is not None and float(end_pose_clearance) <= 0.0:
+        return True
+    return False

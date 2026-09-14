@@ -113,3 +113,29 @@ def height_band_is_sane(minimum, maximum, floor_height):
     return bool(
         float(maximum) < float(floor_height) and float(minimum) > -float(floor_height)
     )
+
+
+def filter_self_returns(points, robot_xy, minimum_range):
+    """Drop points that are the robot's own legs/body, near its own pose.
+
+    The Livox returns off the robot's own body, and those points are inside the
+    robot-relative height band, so they mark the robot's OWN cell occupied.  The
+    planner then sees ``end_pose_clearance == 0`` at its start cell and refuses
+    to produce any route from it for ever (run168 floor 1: ``end_pose_clearance
+    = 0.0``, ``navigation_reachable_cells = 3``, ``NO_FRONTIER``, cmd_vel pinned
+    at (0, 0) while a room was still outstanding).
+
+    ``points`` is an ``(N, 3)`` array in the same frame as ``robot_xy``; only
+    the planar distance is used.  ``minimum_range`` is deliberately larger than
+    the body radius: anything nearer than the navigation clearance the planner
+    is allowed to use cannot be a legitimate obstacle.
+    """
+    import numpy as np
+
+    array = np.asarray(points, dtype=float)
+    if array.size == 0:
+        return array.reshape((0, 3)) if array.ndim != 2 else array
+    dx = array[:, 0] - float(robot_xy[0])
+    dy = array[:, 1] - float(robot_xy[1])
+    limit = float(minimum_range)
+    return array[(dx * dx + dy * dy) >= limit * limit]

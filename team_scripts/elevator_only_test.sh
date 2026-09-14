@@ -73,6 +73,10 @@ ENTRY_CORRIDOR_DEPTH="${ENTRY_CORRIDOR_DEPTH:-}"
 CORRIDOR_GATE="${CORRIDOR_GATE:--0.25,7.30,1.5708}"
 # Driving speed for the corridor legs (flat floor).
 CORRIDOR_SPEED="${CORRIDOR_SPEED:-0.60}"
+# Faithful-to-mainline default: ground truth is NEVER used for control or
+# judgement (the mainline has no truth interface); it is recorded for monitoring
+# only.  Set USE_TRUTH=1 to restore the truth-assisted test mode.
+USE_TRUTH="${USE_TRUTH:-0}"
 # How close to the corridor axis the robot must be before it may U-turn.  The
 # corridor is 2.2 m wide and the body needs ~0.4 m of swing radius, so this is
 # a safety gate, not a precision score (probe 00 jammed at 0.75 m off axis).
@@ -122,6 +126,11 @@ export ROS_HOSTNAME=127.0.0.1
 export ROS_IP=127.0.0.1
 
 mkdir -p "$RUN_DIR"
+# Evidence integrity: a reused tag must start from empty artifacts, otherwise a
+# new mission is appended to the previous run's timeline.
+rm -f "$RUN_DIR/elevator_only_timeline.csv" "$RUN_DIR/elevator_only_summary.json" \
+      "$RUN_DIR/elevator_only_driver.log" "$RUN_DIR/elevator_only_verdict.txt" \
+      "$RUN_DIR/elevator_only_run.env"
 
 say "stopping anything left over from an earlier run"
 bash "$WORKSPACE_DIR/team_scripts/kill_sim_processes.sh" || true
@@ -207,6 +216,7 @@ python3 "$WORKSPACE_DIR/team_scripts/elevator_only_driver.py" \
   _corridor_gate:="[$CORRIDOR_GATE]" \
   _corridor_axis_tolerance:="$CORRIDOR_AXIS_TOLERANCE" \
   _corridor_speed:="$CORRIDOR_SPEED" \
+  _use_truth:="$USE_TRUTH" \
   _exit_retry_limit:="$EXIT_RETRY_LIMIT" \
   _exit_retry_yaw_bias:="$EXIT_RETRY_YAW_BIAS" \
   _board_lateral_tolerance:="$BOARD_LATERAL_TOLERANCE" \

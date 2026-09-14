@@ -126,19 +126,20 @@ class Supervisor:
             ),
         ]
         if int(floor_index) > 0:
-            # The transit has one job on an upper floor: sweep both FRONT
-            # doorways into the map before exploration starts.
+            # Floors 2/3 only.  The lift node now hands the robot to the explorer
+            # standing ON the corridor start (it drives there after leaving the
+            # car -- see elevator_transition_node.py ESTABLISH_FLOOR_1_TOPOLOGY),
+            # so this fixed forward starts at the corridor start and must end at
+            # the same physical node as floor 0's 14.5 m entrance transit.
             #
-            # Measured on run126 floor 1 (2026-09-14): the explorer's anchor is
-            # at along ~1.4 m (it starts after the lift node drove out to the
-            # corridor point), and the front doors are at along 7.4 m.  The old
-            # 9.00 m therefore ended at along ~10.4 m - about 3 m PAST the front
-            # doors - which is the "keeps driving forward, too far" behaviour.
-            # 6.0 m lands on the front doorways; raise it toward 7 if the doors
-            # need more margin, and keep it well below the zone split (~17.5 m).
+            # Floor 0's transit is measured from the spawn; its corridor start
+            # (the virtual gate, ~virtual_gate_forward_distance = 10.5 m) is
+            # 4.0 m before the 14.5 m node.  Hence 4.00 m here, not the old 6.00 m
+            # (which was measured from a lift-mouth anchor 1.8 m PAST the gate and
+            # therefore landed ~3.4 m long, near the front doorways).
             command.append(
                 "initial_forward_distance:={:.2f}".format(
-                    float(os.environ.get("STAGE_B_UPPER_FLOOR_FORWARD", "6.00"))
+                    float(os.environ.get("STAGE_B_UPPER_FLOOR_FORWARD", "4.00"))
                 )
             )
         self.process = subprocess.Popen(command)

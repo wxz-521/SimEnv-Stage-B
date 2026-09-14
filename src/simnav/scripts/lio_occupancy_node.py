@@ -17,6 +17,7 @@ from std_msgs.msg import String
 
 from map_floors_core import (
     ensure_floor_grid,
+    filter_self_returns,
     floor_map_report,
     height_band_is_sane,
     observed_floor_level,
@@ -42,6 +43,11 @@ class LioOccupancyNode:
         self.min_height = float(rospy.get_param("~min_height", -0.10))
         self.max_height = float(rospy.get_param("~max_height", 1.30))
         self.point_stride = max(1, int(rospy.get_param("~point_stride", 4)))
+        # Planar radius around the robot inside which returns are the robot's
+        # own body, not the world (see the filter in _cloud_callback).
+        self.self_filter_range = max(
+            0.0, float(rospy.get_param("~self_filter_range", 0.55))
+        )
         self.frame_id = rospy.get_param("~frame_id", "simnav_map")
         self.lock = threading.Lock()
         # One 2D grid per floor, separated by height, all retained.  The old
@@ -52,6 +58,17 @@ class LioOccupancyNode:
         self.active_floor = 0
         self.grid, _created = ensure_floor_grid(
             self.grids, 0, (self.height, self.width), -1, np.int8
+        )
+        # Per-floor hit counts: a cell only becomes occupied after repeated
+        # returns.  A single spurious return (LIDAR noise, worst at the far end
+        # of a deep room) otherwise becomes a permanent occupied speckle that
+        # blocks navigation and inflates the coverage denominator.
+        self.hit_counts = {}
+        self.occupy_hits, _created = ensure_floor_grid(
+            self.hit_counts, 0, (self.height, self.width), 0, np.uint8
+        )
+        self.occupy_hit_threshold = max(
+            1, int(rospy.get_param("~occupy_hit_threshold", 3))
         )
         self.robot_z_samples = {0: []}
         self.floor_height = float(rospy.get_param("~floor_height", 2.6))
@@ -108,6 +125,9 @@ class LioOccupancyNode:
                 return
             self.grid, created = ensure_floor_grid(
                 self.grids, floor_index, (self.height, self.width), -1, np.int8
+            )
+            self.occupy_hits, _created = ensure_floor_grid(
+                self.hit_counts, floor_index, (self.height, self.width), 0, np.uint8
             )
             self.active_floor = int(floor_index)
             self.robot_z_samples.setdefault(int(floor_index), [])
@@ -171,6 +191,17 @@ class LioOccupancyNode:
         homogeneous = np.ones((raw.shape[0], 4), dtype=float)
         homogeneous[:, :3] = raw
         transformed = np.matmul(alignment, homogeneous.T).T[:, :3]
+        # Drop the robot's own legs/body.  They sit inside the height band and
+        # would mark the robot's OWN cell occupied; the planner then sees a
+        # start cell with zero clearance and refuses to plan from it at all
+        # (run168 floor 1: end_pose_clearance 0.0, navigation_reachable_cells 3,
+        # NO_FRONTIER, cmd_vel pinned at (0, 0) with a room outstanding).  The
+        # filter radius is larger than the body: nothing nearer than the
+        # navigation clearance can be a legitimate obstacle.
+        if self.self_filter_range > 0.0:
+            transformed = filter_self_returns(
+                transformed, robot[:2], self.self_filter_range
+            )
         with self.lock:
             floor_level = observed_floor_level(
                 self.robot_z_samples.get(int(self.active_floor), ())
@@ -193,7 +224,17 @@ class LioOccupancyNode:
                 # occupied cells must remain occupied.
                 trace_ray_free(self.grid, robot_cell, endpoint)
             columns, rows = zip(*points)
-            self.grid[np.asarray(rows), np.asarray(columns)] = 100
+            rows = np.asarray(rows, dtype=int)
+            columns = np.asarray(columns, dtype=int)
+            # Count repeated returns.  A single-frame spurious point (noise)
+            # never reaches the threshold, so it stays free instead of becoming
+            # a permanent obstacle; a real wall is hit every scan and confirms
+            # within a few cycles.
+            np.add.at(self.occupy_hits, (rows, columns), 1)
+            np.minimum(self.occupy_hits, 255, out=self.occupy_hits)
+            confirmed = self.occupy_hits[rows, columns] >= self.occupy_hit_threshold
+            if confirmed.any():
+                self.grid[rows[confirmed], columns[confirmed]] = 100
             self.stamp = message.header.stamp
 
     def _grid_message(self, grid, stamp):

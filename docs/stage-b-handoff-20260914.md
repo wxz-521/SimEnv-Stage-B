@@ -1,6 +1,7 @@
 # Stage-B 会话交接（2026-09-14 交接点）
 
 > **本文件用途**：跨会话交接。新会话请**先读这一份**，再读 `docs/功能模块设计.md`（活文档，含完整设计/变更记录）。
+> **本轮新增**：**§10 独立电梯模块**（faithful 真值闸门、10 连场证据、定位漂移结论、跑法/工具）——电梯相关问题优先看 §10。
 > **维护规则**：每次交接前更新本文件；大改仍写进 `功能模块设计.md` 的「变更记录」。
 
 ---
@@ -251,3 +252,208 @@ docker exec simenv-noetic bash -lc 'cd /workspace/SimEnv && source /opt/ros/noet
 - run117（`logs/run117_doorlanding_20260914/`）在跑，带本轮改动 #1–#3、#5–#8；**#4 的"起点重规划"代码是在 run117 启动之后编辑的，run117 不含该条**。
 - 已验证：floor 0 已进 `L_15 / R_15 / L_49 / R_43`，`path_offset=0.000`，`fixed_step_transit` 未触发（走的是前沿，符合"前沿优先"）。
 - 待看：固定位移兜底是否在前沿耗尽时出现并落到后门；上楼后入场直行 9 m 与 plane 步态；三层通用。
+
+
+---
+
+## 10. 独立电梯模块（本轮重点：2026-09-14 深夜 ~ 09-15 凌晨）
+
+### 10.1 目标与当前状态
+- **模块**：`team_scripts/elevator_only_test.sh` + `elevator_only_driver.py`（+ `elevator_only_matrix.sh` 跑批）。场景自起：`roscore + auto.sh(Gazebo/机器狗/控制器) + stage_b_localization`，**不启探索器、不启电梯节点**。
+- **流程**（用户定义）：出生在**门外** (0.0, -3.2) 朝 **+1.5708** → 进楼门 → 走廊口 → 居中 → 掉头 → 回电梯 → 对准门中心 → 进梯 → **1→2 层** → 出梯 → 走廊口 → 居中 → 掉头 → 回电梯 → 对准门 → 进梯 → **2→3 层** → 出梯 → 走廊口 → 居中 → 掉头 → 回电梯 → 对准门 → 进梯 → **3→1 层** → 出梯 → **出门回出生点**。
+- **已达成（真值辅助控制版）**：同一冻结版本 **连续 10 场 PASS**
+  driver `3a2e0c7e86392c8e7880e63bd691daccd51bb74b1ffaf8853989fe997f120e1c` /
+  test.sh `cb85505ecdd3ac11d9296f24292159728adaa2f081ab17cdabd5e6638e60ddd6` /
+  matrix.sh `c59fcea0f5560fe4a1d4dca603249841c85a86f80c9c322513bf685cc268e27c`。
+  工况覆盖：标称×4 + 进深 2.4 m + 进深 1.15 m + 横移 ±0.30 m + 出生朝向 ±0.03 rad。
+  证据：`logs/FINAL_10_pass_report.txt`（独立复核，含哈希核对）。每场：3 次乘梯、乘梯 z 0.31/2.91/5.51/0.31、进梯真值横向 ≤0.15 m、终点 0.20–0.28 m、墙钟 397–507 s。
+- **用户随后要求"忠实主线"**（`USE_TRUTH=0`，现为**默认**）：真值**只能监控**，控制与判定必须只用主线能拿到的信息——依据：`generated_building/team_scene_info.json` 允许服务仅 `/set_door_state`、`/call_elevator`，`forbidden_topics` 含 `/Odometry_gazebo`、`/ground_truth/*`，`forbidden_files` 含 `layout_metadata.json` 等。
+
+### 10.2 忠实模式的实现（关键机制）
+1. **单点真值闸门**：Gazebo 真值每 0.25 s 仍轮询，但只写 `gazebo_truth*`（监控）；控制/判定用的 `robot_truth*` 在 `USE_TRUTH=0` 时取**本机定位估计** `world_pose = (x, y, yaw, z)`。因此驱动里 91 处"真值"使用点**自动全部变成估计**（分区驾驶选择、进梯对准/登梯判定、excursion 深度、出梯过门、终点判定、卡滞与进度看门狗）。
+2. **时间线**：`truth_*` 列**始终写 Gazebo**（监控）；`world_*` 列是控制用的估计；复核脚本另给 `max/median_ctrl_error`。
+3. **乘梯到站判定**：估计 z **看不到乘梯**（机器人在轿厢内静止），故忠实模式改为**按 `/call_elevator` 回报**（`accepted` 且 `current_floor == target_floor`）；`VERDICT(lift)` 同步改用每腿 `floor_ok`。
+4. **发散守卫**：始终与 Gazebo 比较（**仅守护**），忠实模式下**全域致命**（3.0 m / 2 s 去抖），不存在"真值驾驶免罚区"。
+5. **轿厢出口**：由 `exit_mode` **单独决定**——`reverse`（默认，用户要求"出电梯倒着出"；6 cm 轿厢门槛正向会咬）/ `turn_forward`（轿厢内掉头按左右余量选向 + 正向出门，保留为选项）。
+6. **回程**：门厅内转身到出生朝向（耐心预算 150 s + 起转看门狗）→ **倒行**穿大门与 8 cm 台阶到出生点（朝楼内特征侧倒行，利于 LIO），**门洞区域加激光两侧居中**；**终点只判位置**（官方只考核危险源与耗时，`team_scene_info.json` 只定义 `robot_start`；朝向仅记录）。
+7. **进楼台阶**（`entrance_apron` 8 cm，y∈[-2.4,0]）：真值进度看门狗 + 5 s 停滞触发 + 后退重顶 + 步态复位；正向上下台阶可靠，**倒行越台阶差**（用户明确）。
+
+### 10.3 本轮实测到的关键事实（不要重新推演）
+| 事实 | 数值/结论 |
+|---|---|
+| 忠实模式探针（`faithful_probe2`） | 三腿乘梯全过；死在回出生点，**定位误差最大 3.44 m**（门厅/院子空旷区）→ `SPAWN_REVERSE_TIMEOUT_DIST_1.74M`。**结论：此前 10/10 有真值兜位置成分** |
+| 转身可靠性（285 段实机统计） | **走廊 93%**（82/88）、**门厅 58%**（112/193）、室外 50%（3/6）→ "对准走廊中线"是关键锚 |
+| 走廊入口基准 | 探索器估计 `(-0.25, 7.30, 1.5708)`（与独立脚本硬编码一致）；**真实入口 y=7.85、真实中线 x=0.00** → 偏差 0.55 m / 0.25 m（离线评估：只把机动点挪进走廊 ~0.5 m、左移 0.25 m，离墙仍余 0.54 m，不改判据性质） |
+| 轿厢门槛 6 cm | 正向过会咬（`EXIT_CAR_NO_PROGRESS_AFTER_3_RETRIES_TRAVELLED_0.08M`）；**倒行 + 退避重顶稳** |
+| 大门台阶 8 cm | 正向下台阶可靠；倒行越台阶差 |
+| 候选电梯门洞 | 已复用主流程检测器（只读 import）+5 周期确认+合理性守卫（>0.60 m 或 >0.25 rad 拒绝）；但**地图里轿厢门是关的**（门洞被门扇占满，最长自由跨 0.9 m 且不在门位）→ 正确返回 0 候选并回退参照；驱动已改开局先开 0 层门 |
+| 门口防污染 | 每场启动即 `rm -f` 清空 timeline/summary/log/verdict/env（`test.sh` + 驱动自身都清），tag 复用不再叠加两场 |
+
+### 10.4 工具与跑法
+```bash
+# 忠实主线（默认，真值仅监控）
+docker exec -d simenv-noetic bash -lc 'cd /workspace/SimEnv && USE_TRUTH=0 STREAK_TARGET=5 MAX_RUNS=5 CLEAN_WAIT=12   bash team_scripts/elevator_only_matrix.sh 20260902 faithful5 > /workspace/SimEnv/logs/faithful5.log 2>&1'
+# 真值辅助（旧口径，快；USE_TRUTH=1）
+# 逐场监视（宿主，含工况/判定/进梯真值/出梯方式/定位误差/完成时版本哈希）
+python3 SimEnv/logs/watch_next_run.py 20260902
+# 独立复核（不采信驱动自报，从 timeline 重算）
+python3 SimEnv/logs/verify_streak.py <prefix> 20260902
+# 实时看板
+python3 SimEnv/logs/live_dashboard.py        # http://127.0.0.1:8090/
+# 汇总
+python3 SimEnv/logs/final_report.py '<tag glob>' 20260902
+# 清场（标准序列）
+docker exec simenv-noetic bash -lc 'pkill -f elevator_runner_; pkill -f elevator_only_test.sh; sleep 2;   cd /workspace/SimEnv && bash team_scripts/kill_sim_processes.sh'
+```
+
+### 10.5 忠实测试结果（`faithful5`，`USE_TRUTH=0`）
+版本（权威，见 `logs/faithful5_code_hashes.txt`）：driver `6b9b1c50…` / test.sh `d8243078…` / matrix `c59fcea0…`。
+逐场监视：`python3 SimEnv/logs/faithful5_monitor.py`（后台作业输出 `logs/faithful5_monitor.out`）。
+
+| 场次 | 判定 | 乘梯/走廊 excursion | 定位误差 max / median | 终点距出生点 | 墙钟 |
+|---|---|---|---|---|---|
+| faithful5_01 | **PASS** | 3 / 3 | **0.29 m / 0.16 m** | 0.23 m | 373 s |
+
+`faithful5_01` 详情：`WAIT_READY→ENTER_BUILDING→TO_CORRIDOR→CORRIDOR_CENTRE→TURN_AROUND→BACK_TO_LIFT→ALIGN_DOOR→ENTER_CAR→RIDE→EXIT_CAR→RETURN_SPAWN→DONE`；真值楼层平台 0.31/2.92/5.52/0.31；三次出梯**全部倒行**（`travelled` 1.04/1.02/1.01 m）；进梯真值横向 −0.121/−0.008/−0.024 m；走廊 excursion 真值深度 1.22 m×2；独立复核 clean。
+
+> **重要更正**：早先探针的 3.44 m 定位漂移与"忠实版必漂"的结论**不成立**——本轮忠实运行定位误差仅 0.29 m（中位 0.16 m）。原因是探针当时用的是修好之前的旧版本（`fbcf92b6`，`exit_mode` 初始化崩溃前的那一版）。**忠实模式可以做到与真值辅助版同等精度。**
+>
+> **证据卫生**：`logs/elevfaith3_code_hashes.txt`（00:46:22）是**过期**记录（写文件时驱动正在被改写，哈希 946b7eff 无效），已被 `logs/faithful5_code_hashes.txt` 取代；`logs/run_revisions.tsv` 里 `faithful5_01` 的旧行（`fbcf92b6`，00:44:55，来自崩溃批）已修正为 `6b9b1c50`，并且 `watch_next_run.py` 已改为**按 tag 覆盖写入**（原先只在 tag 首次出现时写，导致复用 tag + 失败批会把版本归属搞错）。
+>
+> **中断说明（01:08:54）——按用户指示的正常停止，不是驱动缺陷**：`faithful5_02` 跑到 sim 157.7 s（`TURN_AROUND`，走廊口 y≈8.66）时，被**另一会话按用户指示"停止当前电梯单独测试"清场**（`pkill elevator_runner_/elevator_only_test.sh/elevator_only_driver` + `kill_sim_processes.sh`）终止，matrix runner 同时被杀，因此没有 fault / 没有 verdict，`logs/faithful5_summary.txt` 里只有 run 1。该会话随后把本模块方法融合进主线，见 **§11**。
+> **结论**：本模块 5 场忠实测试**只完成 1 场（1/1 PASS，定位误差 0.29/0.16 m）**。若要继续跑余下 4 场，必须**等主线运行结束、容器空闲**（同一容器只有一个 Gazebo/roscore；本模块的 `clean-room` 会杀掉正在跑的主线）。本模块 `elevator_only_driver.py` **未被改动**（哈希仍 `6b9b1c50…`，已核对）；并发会话改的是 `team_scripts/two_floor_explorer_supervisor.py` 与 `src/simnav/scripts/elevator_transition_node.py`。
+
+### 10.6 未决与下一步（按优先级）
+1. **忠实版连续成功**：`faithful5_01` 已 PASS 且定位误差仅 0.29 m（见 10.5 更正）；等 5 场跑完看失败率与误差分布，再决定是否需要额外的地标锚定（走廊两墙配平、门洞两侧激光已用）。~~定位漂移 1.5–3.4 m~~ 是旧版本（`fbcf92b6`）的现象，**不再是当前结论**。
+2. **走廊入口点是否对齐真实入口**（7.85 / 中线 0.00）：独立脚本应沿用主线估计才忠实；若要更准需改**主线**的门口拟合。
+3. **候选门洞**：让门在地图里可见（开局开门是否足够 / 改门垛几何检测）。
+4. 主线整体验收（探索 + 电梯 + 回程，`logs/run163_cmd.txt` 有命令）仍待跑；84% 与红球基线见 §3 的 T-B。
+
+---
+
+## 11. 独立电梯测试三段融合进主线（2026-09-15 凌晨，**已执行，未上机验证**）
+
+> **触发**：用户指示"停止当前电梯单独测试，把最新一次测试的对应方法融合到主线"——三部分：走廊起点→电梯、电梯→从电梯出来到走廊起点（含主线固定前行的配合改动）、电梯→大门→出生点，并做接口对接（去电梯须先到走廊起点）。
+> **测试状态**：`faithful5` 矩阵已被我停掉并清场（`pkill elevator_runner_/elevator_only_test.sh/elevator_only_driver` + `kill_sim_processes.sh`，复核无残留进程）。停止前 `faithful5_01` 已 **PASS**（3/3 乘梯、定位误差 0.29/0.16 m、终点 0.23 m），即用户所说"目前测试效果稳定"——本轮融合的就是这一版方法。
+> **改的文件**：`src/simnav/scripts/elevator_transition_node.py`、`team_scripts/two_floor_explorer_supervisor.py`。`docs/功能模块设计.md` 已加变更记录。
+
+### 11.1 融合了哪些方法（都来自 `elevator_only_driver.py`）
+
+| 段 | 主线新实现 | 对应 driver 状态 |
+|---|---|---|
+| 走廊起点→电梯 | `_control_return_to_lift()`：`TO_CORRIDOR_START`(A\* 到闸门) → `CORRIDOR_CENTRE`(`_center_on_corridor_axis()`) → `TURN_TO_LIFT`(掉头到 `gate_yaw+π`，带 walk-and-turn 解卡) → `TO_STAGING`(`_elevator_staging_source()` = 已知车门沿门法线回退 `staging_distance`) | `CORRIDOR_CENTRE` → `TURN_AROUND` → `BACK_TO_LIFT` |
+| 对门 | `_control_align_door()`：横向超 `entry_lateral_tolerance` 先滑到门轴点 `min(along,−0.30)`，再对准门法线 | `ALIGN_DOOR` |
+| 电梯→走廊起点 | `ESTABLISH_FLOOR_1_TOPOLOGY` = `CLEAR_CAR`(到 staging) → `TO_CORRIDOR_START`(A\* 到闸门) → `CORRIDOR_CENTRE`；完成后 `_finish_floor_topology()` 把机器人**停在走廊起点**交给探索器 | `EXIT_CAR` → `TO_CORRIDOR` → `CORRIDOR_CENTRE` |
+| 电梯→大门→出生点 | `_control_spawn_return()` 三阶段：`AXIS`(到 `(spawn_x, 1.80)`) → `FACE`(室内转向出生朝向，带解卡/超时) → `REVERSE`(倒行穿大门 + 8 cm 台阶，门洞激光居中，只判位置) | `RETURN_SPAWN` |
+
+### 11.2 接口对接（主线配合改动）
+
+1. **去电梯先到走廊起点**：`RETURN_TO_ELEVATOR` 第一阶段就是 A\* 到 `_corridor_gate()`（= `floor1_gate or floor0_gate_source or gate_source`，源图）。上层楼 `RETURN_TO_FLOOR_1_GATE` **复用同一函数**，删掉了 `ENTER_FLOOR_1_LOBBY` / `SEARCH_FLOOR_1_ELEVATOR` 两级旧链（监督器仍以 `RETURN_TO_FLOOR_1_GATE` 为停探索器的触发点，契约不变）。
+2. **上层楼固定前行**：电梯节点现在把机器人停在**走廊起点（闸门，gate-along 0）**；`two_floor_explorer_supervisor.py` 的 `STAGE_B_UPPER_FLOOR_FORWARD` 由 **6.00 → 4.00**。依据（用户确认）：一层 14.5 m 节点、走廊起点≈虚拟闸门 `virtual_gate_forward_distance=10.5`，二者相差 **4.0 m**；只有 `floor_index > 0`（2/3 层）追加该参数，一层仍走自己的入楼 transit（14.5）。
+3. **倒行出梯不翻转**：`RIDE_TO_GROUND_FLOOR` 删掉 `elevator_heading += π`。机器人进梯时朝轿厢内，`_drive_distance(reverse=True)` 沿门法线倒着出——与 driver 每腿一致；旧翻转会让倒行变成开回轿厢。
+4. 新增参数（都可 rosparam 调）：`corridor_start_tolerance=0.40`、`spawn_turn_y=1.80`、`spawn_axis_tolerance=0.45`、`spawn_axis_timeout=120`、`spawn_face_tolerance=0.12`、`spawn_turn_timeout=150`、`spawn_reverse_timeout=300`、`spawn_reverse_yaw_bias=0.16`、`turn_unstick_*`。
+5. 出生点用**启动时锁存的世界系位姿** `spawn_world`（`_pose_callback` 在 `WAITING` 时锁一次）；拿不到时退回源图 `(0,0)`。
+
+### 11.3 验证到什么程度 / 还没验证什么
+
+- ✅ `py_compile`；`check_undefined_attrs.py`、`check_read_before_assign.py` 均 OK；离线回归 **242 项全绿**；状态机"set 的每个 state 都有 handler"已用 AST 核对（`MISSION_FAULT` / `RETURNED_TO_SPAWN` / `TOP_FLOOR_COMPLETE` 为终止态，靠 `fault` / `two_floor_mission_complete` 提前 return）。
+- ❌ **没有上机跑三层**。这轮只做代码融合 + 离线门禁，行为未实测。首次上机建议按 §4 受护启动，重点看：`ESTABLISH_FLOOR_1_TOPOLOGY` 是否停在走廊起点、上层 `initial_forward_progress` 是否到 4.0、`RETURN_TO_SPAWN` 三阶段、一层 `RETURN_TO_ELEVATOR` 的四个 phase 日志。
+- ⚠️ 已知风险：`TO_CORRIDOR_START` 用 A\* 打到闸门点本身，若闸门格被膨胀占据，`_drive_planned_to` 会走 `route_accept_distance=1.2 m` 接受或 60 s 后 `ROUTE_UNREACHABLE`（旧的 `return_mouth_along=1.0` 实测位移写法没有这个风险，但终点不是起点）；`_center_on_corridor_axis` 的横向修正用实测位移、无独立超时；`_elevator_staging_source()` 沿用 driver 的**实时位姿对**换算（`_known_door_source()`），非成对闸门换算。
+
+### 11.4 首次上机 run165 + 死锁修复 + 重跑 run166（2026-09-15 深夜）
+
+**run165**（`logs/run165_fused_elevator_20260915/seed_20260902`，受护启动 health PASS，Gazebo GUI 关、RViz 开）：
+
+- floor 0 探索正常：sim 133 `ROOM_L_15` 退休；sim 235.8 已退休 `L_15/R_15`、锁 `R_43`。
+- **第一段（走廊起点→电梯）验证通过的部分**：`RETURN_TO_ELEVATOR` 自 sim 324.8 起（src (31.9, 1.3)、gate_along 21.4）回走廊，**到走廊起点最近 0.069 m**（along=−0.002 / lateral=0.069 @ sim 387.9），整段横向最小 |lateral| **0.028 m**；随后到 staging（车门框 along≈−2.2）并进 `ALIGN_ELEVATOR`（sim 397.3）。**走廊门口到达没问题。**
+- **死锁**：`ALIGN_ELEVATOR` 门框横向 **0.25 m** > `entry_lateral_tolerance=0.15` ⇒ 滑移分支；但 `_drive_to(..., arrival_tolerance=0.12)` 的容差被钳到 `target_tolerance=0.35`，0.25 ≤ 0.35 立即判"已到达" ⇒ 每周期只 `_stop()` ⇒ `cmd_vel=(0,0)` 冻结 **75 仿真秒**（sim 397→472）。
+- **排除"没有电梯候选"**：运行状态 JSON `elevator_portal=null`、`elevator_portal_world=null`，但**已知车门已配置**（日志 `Known car door: centre (1.65, 2.60) yaw 0.00 width 1.40`），`_approach_portal()` 返回 known door，所以候选缺失不是原因。
+- 清场教训：`pkill -f "rviz -d /workspace/SimEnv/..."` 的模式会匹配到自己所在命令行，把自己 SIGKILL（exit 137）；必须写 `rvi[z]`。
+
+**修复**：`_control_align_door()` 的横移改为实测位移（`_align` 到门轴点航向 + `_drive_distance(abs(lateral))`，`lateral_correction_distance/_heading` 跨周期记账），不再走会钳容差的 `_drive_to`。
+
+**run166 重跑**：`logs/run166_fused_alignfix_20260915/seed_20260902`（同 seed / 55% / three_floor，受护启动）。待验证：`ALIGN_ELEVATOR` 应在 1–2 s 内完成并进 `ENTER_ELEVATOR`；之后继续核对 ⑵ 上层 4.0 m 固定前行与 ⑶ `RETURN_TO_SPAWN` 三阶段。
+
+### 11.5 run166 结果：走廊起点 0.013 m + ALIGN 修好，但暴露"登梯守卫无符号"（2026-09-15 深夜）
+
+**run166 好的部分**：
+- 走廊起点到达 **0.013 m**（along −0.013 / lateral 0.003 @ sim 424.6），整段最小 |gate_lateral| **0.002 m** —— 比 run165（0.069 m）更好。
+- `ALIGN_ELEVATOR`（sim 434.0）→ `ENTER_ELEVATOR`（sim 444.5）只用 **10.5 仿真秒**（run165 在此永久冻结）。进梯对中 `entry lateral` 从 run165 的 0.25 m 变成 **−0.05~+0.02 m**。
+
+**run166 新的卡点（登梯，not 候选缺失）**：遥测门框 `along`：
+
+| sim | along | 动作 |
+|---|---|---|
+| 444.5 | −2.365 | 开始进梯 |
+| 450.5 | −0.072 | 刚过门平面 |
+| 452.5 | **+0.150** | 已入轿厢 0.15 m，但 `vx=−0.25` **倒退** |
+| 454.5 | −0.219 | 被"退"出来 |
+| 460.5 | +1.586 | 第二次冲入 |
+| 462.5 | **+1.678** | 顶到**轿厢后壁**，停死（vx=0） |
+
+日志每 2.4 s 刷 `entry distance driven but the robot is 1.67 m from the car doorway (tolerance 1.20)`。两个 bug：
+1. 第一次到 `along=+0.15` 时 `_entry_outside_car()` 要求 `along ≥ elevator_door_inset=0.35` 才算"里面"，0.15 < 0.35 ⇒ 判"在外面" ⇒ 无谓倒退。
+2. 重冲顶后壁 `along=+1.67` 后，旧守卫用**无符号距离** `hypot(src−portal)`，把"门内侧 1.67 m（已进入轿厢）"当成"离门口 1.67 m（在外面）"⇒ 拒绝上梯。**独立 driver 的判据是 `along ≥ car_depth(1.20) 或 travelled ≥ enter_distance(3.00)`，有向**。
+
+**修复**：① 守卫改有向——用 `_entry_inside_car()` 的 `along`，只在 `along < 0`（仍在门平面外）拒绝；② `enter_distance` 2.45 → **3.00**（对齐 driver 默认；也让第一次进梯落到 `along≈+0.6`，越过 0.35 门槛，不再无谓倒退）。离线门禁全绿。
+
+**run167 重跑**：`logs/run167_fused_enterfix_20260915/seed_20260902`（同参数）。待验证：`ENTER_ELEVATOR → RIDE_TO_FLOOR_1` 是否发生、之后 ⑵ 上层 4.0 m 固定前行与 ⑶ `RETURN_TO_SPAWN` 三阶段。
+
+### 11.6 run167 结果：登梯/乘梯/出梯都通了，但出梯后"在轿厢口原地转不动"（对上了 driver 的 TO_CORRIDOR 子段 0）
+
+**run167 通的部分**：走廊起点 0.079 m；`ALIGN_ELEVATOR`（sim 391.9）→ `ENTER_ELEVATOR`（405.5）→ **`RIDE_TO_FLOOR_1`（417.6）** —— 登梯有向守卫 + `enter_distance=3.00` 生效，**真的上楼了**；`ALIGN_FLOOR_1_EXIT` → `EXIT_ELEVATOR`（439.5）也正常。
+
+**run167 卡点**：`ESTABLISH_FLOOR_1_TOPOLOGY` 的 `CLEAR_CAR` 相位，遥测：
+
+| sim | src | yaw | vx / wz |
+|---|---|---|---|
+| 449.9 | (5.83, −0.37) | −1.54 | 0 / 0 |
+| 451.9 | (5.80, −0.36) | −1.93 | 0 / **−0.45** |
+| 453.9 → 535.9 | (5.79, −0.36) 冻住 | **−1.97 冻住** | 0 / **−0.45** |
+
+即：离车门平面 **1.28 m**、在轿厢口，命令持续转 150 仿真秒但 yaw 不动 ⇒ **物理上转不动（楼梯核心与电梯井之间夹住）**。最后：
+```
+18:03:55 [WARNING] Floor 1 topology not reached within 150s
+         (route_retry_count=0, front_clearance=1.41); continuing
+18:03:55 state -> FLOOR_1_READY
+```
+150 s 超时兜底放行 → 监督器起二层探索器 → 机器人才动。**所以"它又开始走了"是超时兜底，不是修复**；而且探索器在轿厢口起锚，**二层入场的 4.0 m 不是从走廊起点开始，第 ② 段这轮无效**。
+
+**根因（没对上独立 driver）**：driver 的 `TO_CORRIDOR` 子段 0（`excursion_leg == 0` 且 `exit_reverse`）明确写：
+> "倒行出梯后机器人朝轿厢内、staging 航点在正后方，在那里掉头会把机器人卡死（probe 02），所以**先沿当前朝向倒车直走到 staging 航点，到了有空间再转**。"
+
+主线 `CLEAR_CAR` 却调 `_drive_planned_to(staging)`；距离 ≤ `direct_entry_max_distance=4.0` 时走 `_drive_direct`，而 **`_drive_direct` 是先原地转向再前进** ⇒ 正好在轿厢口打转。
+
+**修复**：`CLEAR_CAR` 用已知车门的门框 `along` 算出还需外移多少，用 `_drive_distance(..., reverse=True)` **沿门法线倒车直走**到 `along = −staging_distance`；门框不可用时才回退 `_drive_planned_to`。转向改在 staging（离车 2.2 m、有空间）处发生，与 driver 一致。离线门禁全绿。
+
+**run168 重跑**：`logs/run168_fused_exitfix_20260915/seed_20260902`。待验证：`CLEAR_CAR` 应在 1–2 s 内倒车完成、`TO_CORRIDOR_START` 到达走廊起点（gate_along≈0）、随后探索器 `initial_forward_distance=4.0` 从走廊起点起算。
+
+### 11.7 run168：出电梯修复验证通过（2026-09-15 深夜）
+
+状态链（无任何告警）：
+```
+18:11:40 RETURN_TO_ELEVATOR
+18:13:03 ALIGN_ELEVATOR
+18:13:18 ENTER_ELEVATOR
+18:13:31 RIDE_TO_FLOOR_1
+18:13:56 ALIGN_FLOOR_1_EXIT → EXIT_ELEVATOR
+18:14:06 ESTABLISH_FLOOR_1_TOPOLOGY
+18:14:34 FLOOR_1_READY            ← 28 s（run167 卡 150 s 超时）
+```
+
+`ESTABLISH` 遥测（出梯→走廊起点）：
+| sim | src | gate_along | 动作 |
+|---|---|---|---|
+| 436.3 | (5.82, −0.25) | −4.676 | 进入 ESTABLISH |
+| 438.3 | (5.83, **+0.21**) | −4.670 | **倒车直走到 staging（不在轿厢口打转）** |
+| 440–448 | (5.85, 0.15) | −4.64 | 在 staging 转身（有空间） |
+| 450.3 | (6.37, 0.15) | −4.132 | 前进 |
+| 460.3 | (10.06, 0.50) | **−0.440** | 到走廊起点（横向 0.097） |
+
+二层探索器：`initial_forward_distance=4.0`、`initial_forward_active=True`、`topology_region=CORRIDOR` ✅
+
+**同时确认**：走廊起点→电梯（ALIGN 15 s → ENTER 13 s → RIDE）、登梯有向守卫（真的上梯）都通过。
+
+**run168 暴露的一个小瑕疵（已修，只影响后续轮次）**：`CLEAR_CAR` 里 `distance` 每周期重算、而 `_drive_distance` 的 `travel_anchor` 只设一次，两者相互缩水 ⇒ **只倒了一半**（实测 0.46 m / 需要 0.80 m），少了 0.34 m（这次有空间所以没影响）。修复：新增 `establish_clear_distance` **只 latch 一次**，`_set_state` 一并复位。离线门禁全绿。
+
+**任务聚焦**：噪点问题（已量：漂移 max 0.44 m / median 0.36 m、回环无发布者 count=0、地图实心占 62.7% 而孤立点仅 1.2%）按用户指示暂停，先把三层测试跑通。

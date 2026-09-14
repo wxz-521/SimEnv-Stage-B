@@ -50,6 +50,7 @@ from coverage_explorer_core import (
     pair_room_portals,
     region_of_point,
     region_status,
+    retreat_trail_target,
     room_lock_for_target,
     target_kind_allowed_for_topology_state,
     target_switch_allowed,
@@ -97,6 +98,30 @@ class CoverageExplorer:
         )
         self.committed_speed = max(
             0.10, float(rospy.get_param("~committed_speed", 0.45))
+        )
+        # 2026-09-15: "planning failed -> fixed forward" fallback.  When the plan
+        # produces no target for a while (NO_FRONTIER), the robot first gets onto
+        # the corridor centreline, aligns with the positive corridor direction,
+        # then walks one fixed distance - the same "centre + align + measured
+        # run" primitive as the far-zone committed transit, but with its OWN
+        # state so it never touches that leg or the entrance transit.
+        self.planning_fallback = None
+        self.planning_fallback_idle_since = None
+        self.planning_fallback_grace = max(
+            0.5, float(rospy.get_param("~planning_fallback_grace", 6.0))
+        )
+        self.planning_fallback_step = max(
+            1.0, float(rospy.get_param("~planning_fallback_step", 3.0))
+        )
+        # ``motion_speed`` is not defined yet at this point in __init__; the
+        # control-time clamp in ``_control_planning_fallback`` already caps the
+        # commanded speed at ``self.motion_speed``.
+        self.planning_fallback_speed = max(
+            0.10, float(rospy.get_param("~planning_fallback_speed", 0.45))
+        )
+        self.planning_fallback_count = 0
+        self.planning_fallback_stall_seconds = max(
+            1.0, float(rospy.get_param("~planning_fallback_stall_seconds", 3.0))
         )
         # The robot has just stood up and switched to the RL gait when the
         # transit starts, so the commanded speed ramps in instead of hitting the
@@ -373,6 +398,48 @@ class CoverageExplorer:
         self.collision_block_seconds = max(
             6.0, float(rospy.get_param("~collision_block_seconds", 45.0))
         )
+        # ------------------------------------------------------------------
+        # 2026-09-15: collision detection + bounded retreat.
+        #
+        # Until now a collision (or "target held but no displacement") only
+        # stopped the robot and blacklisted the target, so in a dead end it
+        # stayed physically wedged for ever: the leg controller turns before it
+        # drives, so it can never choose a reverse action by itself (run168
+        # floor 1: wedged against a wall with a room outstanding, cmd_vel pinned
+        # at (0, 0), "NO_FRONTIER").
+        # ------------------------------------------------------------------
+        # Bounded retreat: distance, speed, retries and a hard time budget.
+        self.collision_retreat_distance = max(
+            0.20, float(rospy.get_param("~collision_retreat_distance", 0.80))
+        )
+        self.collision_retreat_speed = max(
+            0.05, float(rospy.get_param("~collision_retreat_speed", 0.22))
+        )
+        self.collision_retreat_limit = max(
+            1, int(rospy.get_param("~collision_retreat_limit", 3))
+        )
+        self.collision_retreat_timeout = max(
+            2.0, float(rospy.get_param("~collision_retreat_timeout", 8.0))
+        )
+        self.collision_retreat_stall_progress = max(
+            0.02, float(rospy.get_param("~collision_retreat_stall_progress", 0.10))
+        )
+        self.collision_retreat_stall_seconds = max(
+            0.5, float(rospy.get_param("~collision_retreat_stall_seconds", 1.5))
+        )
+        # Breadcrumb trail of poses the robot has actually driven through: the
+        # retreat escapes ALONG it, because it is known free, instead of
+        # reversing blindly.
+        self.pose_trail = deque(maxlen=1200)
+        self.pose_trail_last = None
+        self.pose_trail_spacing = max(
+            0.05, float(rospy.get_param("~pose_trail_spacing", 0.10))
+        )
+        self.collision_retreat = None
+        self.collision_retreat_count = 0
+        self.collision_retreat_clear_from = None
+        self.collision_retreats = 0
+        self.collision_retreat_failures = 0
         self.stuck_target_drops = 0
         self.control_faults = 0
         self.plan_faults = 0
@@ -2538,6 +2605,133 @@ class CoverageExplorer:
         self.last_completion_check = now
         self._check_completion()
 
+    def _update_pose_trail(self, pose):
+        """Record breadcrumbs of the ground the robot has actually driven.
+
+        The escape from a dead end is back along this trail (it is known free),
+        never a blind reverse into whatever is behind the robot.
+        """
+        if pose is None:
+            return
+        last = self.pose_trail_last
+        if last is not None and math.hypot(
+            float(pose[0]) - last[0], float(pose[1]) - last[1]
+        ) < self.pose_trail_spacing:
+            return
+        self.pose_trail.append((float(pose[0]), float(pose[1])))
+        self.pose_trail_last = (float(pose[0]), float(pose[1]))
+
+    def _begin_collision_retreat(self, reason):
+        """Arm a bounded reverse along the trail.  False when it cannot start."""
+        with self.lock:
+            if self.collision_retreat is not None:
+                return False
+            if not self.initial_forward_complete:
+                return False
+            if self.collision_retreat_count >= self.collision_retreat_limit:
+                return False
+            pose = self.pose
+            if pose is None:
+                return False
+            goal = retreat_trail_target(
+                self.pose_trail, pose, self.collision_retreat_distance
+            )
+            if goal is not None:
+                # Unit vector FROM the trail crumb TO the robot is the direction
+                # the robot was travelling; reversing along it retraces the
+                # trail.  Using "nose + pi" instead would back into whatever the
+                # robot is facing -- the wall it just hit.
+                heading = math.atan2(
+                    float(pose[1]) - goal[1], float(pose[0]) - goal[0]
+                )
+            else:
+                heading = float(pose[2])
+            now = rospy.Time.now()
+            self.collision_retreat = {
+                "reason": str(reason),
+                "heading": float(heading),
+                "anchor": (float(pose[0]), float(pose[1])),
+                "distance": float(self.collision_retreat_distance),
+                "started": now,
+                "stall_anchor_distance": 0.0,
+                "stall_stamp": now,
+            }
+            self.collision_retreat_count += 1
+            self.collision_retreats += 1
+            # Send the planner looking elsewhere while the robot frees itself.
+            self.active_target = None
+            self.active_path = ()
+            self.path_index = 0
+            self.last_plan_time = rospy.Time(0)
+            self.committed_transit = None
+        rospy.logwarn(
+            "Collision retreat #%d (%s): reversing %.2f m along the trail "
+            "(heading %.2f rad, crumbs=%d)",
+            int(self.collision_retreats),
+            reason,
+            float(self.collision_retreat_distance),
+            float(heading),
+            len(self.pose_trail),
+        )
+        return True
+
+    def _finish_collision_retreat(self, outcome):
+        with self.lock:
+            self.collision_retreat = None
+            pose = self.pose
+            if pose is not None:
+                self.collision_retreat_clear_from = (
+                    float(pose[0]),
+                    float(pose[1]),
+                )
+            self.last_plan_time = rospy.Time(0)
+            self.last_progress_stamp = rospy.Time.now()
+        self._stop()
+        rospy.logwarn(
+            "Collision retreat finished (%s; retreats=%d failures=%d)",
+            outcome,
+            int(self.collision_retreats),
+            int(self.collision_retreat_failures),
+        )
+
+    def _control_collision_retreat(self, pose):
+        """Run the armed retreat.  True while it owns the wheels."""
+        with self.lock:
+            retreat = self.collision_retreat
+        if retreat is None:
+            return False
+        now = rospy.Time.now()
+        anchor = retreat["anchor"]
+        travelled = math.hypot(
+            float(pose[0]) - anchor[0], float(pose[1]) - anchor[1]
+        )
+        if travelled >= (
+            float(retreat["stall_anchor_distance"])
+            + self.collision_retreat_stall_progress
+        ):
+            with self.lock:
+                if self.collision_retreat is not None:
+                    self.collision_retreat["stall_anchor_distance"] = travelled
+                    self.collision_retreat["stall_stamp"] = now
+            retreat = dict(retreat)
+            retreat["stall_stamp"] = now
+        stalled = (
+            now - retreat["stall_stamp"]
+        ).to_sec() >= self.collision_retreat_stall_seconds
+        if travelled >= float(retreat["distance"]):
+            self._finish_collision_retreat("completed")
+            return True
+        if stalled or (now - retreat["started"]).to_sec() >= self.collision_retreat_timeout:
+            self.collision_retreat_failures += 1
+            self._finish_collision_retreat("stalled" if stalled else "timeout")
+            return True
+        error = normalize_angle(float(retreat["heading"]) - float(pose[2]))
+        command = Twist()
+        command.linear.x = -abs(self.collision_retreat_speed)
+        command.angular.z = max(-0.20, min(0.20, 0.8 * error))
+        self._publish_command(command)
+        return True
+
     def _control(self, _event):
         # A raising rospy.Timer callback kills its thread for good.  run44 froze
         # with cmd_vel == (0, 0) for the rest of the mission because an
@@ -2591,6 +2785,24 @@ class CoverageExplorer:
         if (rospy.Time.now() - self.last_pose_stamp).to_sec() > 1.0:
             self._stop()
             return
+        # Breadcrumbs of ground actually driven: the collision retreat escapes
+        # along them (known free) instead of reversing blindly.
+        self._update_pose_trail(pose)
+        # A collision retreat owns the wheels until it finishes.  It is placed
+        # BEFORE every other controller on purpose: they all turn-then-drive, so
+        # none of them can free a robot wedged in a dead end.  ``floor_complete``
+        # already returned above, so this can never fight the elevator handoff.
+        if self._control_collision_retreat(pose):
+            self._publish_status()
+            return
+        # Re-arm the retreat budget once the robot has genuinely moved on: a
+        # retrograde episode is bounded, but the mission gets fresh attempts.
+        if self.collision_retreat_clear_from is not None and math.hypot(
+            float(pose[0]) - self.collision_retreat_clear_from[0],
+            float(pose[1]) - self.collision_retreat_clear_from[1],
+        ) >= 1.0:
+            self.collision_retreat_count = 0
+            self.collision_retreat_clear_from = None
         if not self.initial_forward_complete:
             self._control_initial_forward(pose, world_pose, front)
             self._publish_status()
@@ -2610,6 +2822,32 @@ class CoverageExplorer:
             pose, committed_along
         ):
             return
+        # Planning-failed fixed forward (2026-09-15): when the plan has produced
+        # no target, commit a fixed forward so the robot does not stand still in
+        # the corridor.  Its own state, separate from the far-zone committed leg
+        # (above) and the entrance transit (handled before this block).
+        if self.planning_fallback is not None:
+            if self._control_planning_fallback(pose):
+                self._publish_status()
+                return
+        elif (
+            self.initial_forward_complete
+            and self.committed_transit is None
+            and target is None
+            and not complete
+            and self.last_plan_reason == "NO_FRONTIER"
+        ):
+            if self.planning_fallback_idle_since is None:
+                self.planning_fallback_idle_since = rospy.Time.now()
+            elif (
+                rospy.Time.now() - self.planning_fallback_idle_since
+            ).to_sec() >= self.planning_fallback_grace:
+                self.planning_fallback_idle_since = None
+                if self._begin_planning_fallback(pose):
+                    self._publish_status()
+                    return
+        else:
+            self.planning_fallback_idle_since = None
         if pose is not None:
             # Displacement-based progress stamp (see the constructor note).
             if (
@@ -2678,6 +2916,20 @@ class CoverageExplorer:
                     int(self.stuck_target_drops),
                     "yes" if not path else "no",
                 )
+                # A no-progress episode is only strong enough for a retreat
+                # when the scan also says that the robot is physically boxed
+                # in.  The front check covers a direct obstruction; the side
+                # checks catch a jamb/wall contact where the front beam still
+                # sees open space.  Without this conjunction a planner stall
+                # in an open room would make the robot back away needlessly.
+                side_obstacle_limit = self.robot_radius + self.safety_margin + 0.12
+                obstacle_near = (
+                    (front is not None and front < self.motion_stop_distance)
+                    or self.left_clearance < side_obstacle_limit
+                    or self.right_clearance < side_obstacle_limit
+                )
+                if obstacle_near and self._begin_collision_retreat("NO_PROGRESS"):
+                    return
                 self._stop()
                 return
         if target is None or not path:
@@ -2833,7 +3085,11 @@ class CoverageExplorer:
                 self.active_path = ()
                 self.path_index = 0
                 self.last_plan_time = rospy.Time(0)
-            self._stop()
+            # Stop-and-blacklist alone left the robot wedged in a dead end for
+            # ever (run168).  Back out along the trail as well; if that cannot
+            # start (retry budget spent, no pose) fall back to the old stop.
+            if not self._begin_collision_retreat("FRONT_BLOCKED"):
+                self._stop()
             return
         else:
             self._clear_align_stall()
@@ -2937,6 +3193,102 @@ class CoverageExplorer:
             + (target - self.initial_forward_start_speed) * fraction
         )
         return max(0.0, min(target, speed))
+
+    def _begin_planning_fallback(self, pose):
+        """Arm the fixed-forward fallback for a NO_FRONTIER standstill.
+
+        Plans ONE target point a fixed distance ahead along the corridor
+        (positive direction) and lets the normal turn-then-drive guidance route
+        to it.  Its own ``self.planning_fallback`` state keeps it from touching
+        the far-zone committed leg or the entrance transit.
+        """
+        with self.lock:
+            gate = self.gate_source
+        if gate is None or pose is None:
+            return False
+        cosine, sine = math.cos(float(gate[2])), math.sin(float(gate[2]))
+        dx = float(pose[0]) - float(gate[0])
+        dy = float(pose[1]) - float(gate[1])
+        along_now = dx * cosine + dy * sine
+        step = float(self.planning_fallback_step)
+        target = (
+            float(gate[0]) + (along_now + step) * cosine,
+            float(gate[1]) + (along_now + step) * sine,
+        )
+        now = rospy.Time.now()
+        with self.lock:
+            self.planning_fallback = {
+                "target": target,
+                "started": now,
+                "stall_distance": step,
+                "stall_stamp": now,
+            }
+            self.planning_fallback_count += 1
+        rospy.loginfo(
+            "Planning fallback #%d: target=(%.2f, %.2f) = %.2f m ahead "
+            "(along=%.2f)",
+            int(self.planning_fallback_count),
+            target[0],
+            target[1],
+            step,
+            along_now,
+        )
+        return True
+
+    def _control_planning_fallback(self, pose):
+        """Run the fixed-forward fallback toward its ahead target point.
+
+        Non-interruptible by construction: the dispatch runs this before any
+        planner output is consulted, and it owns the wheels until it reaches
+        the target, stalls, or times out.
+        """
+        with self.lock:
+            fallback = self.planning_fallback
+        if not self.initial_forward_complete or self.floor_complete:
+            self.planning_fallback = None
+            return False
+        if fallback is None:
+            return False
+        if pose is None:
+            self.planning_fallback = None
+            self._stop()
+            return False
+        target = fallback["target"]
+        remaining = math.hypot(
+            float(target[0]) - float(pose[0]), float(target[1]) - float(pose[1])
+        )
+        now = rospy.Time.now()
+        if remaining <= self.target_tolerance:
+            self.planning_fallback = None
+            self.last_plan_time = rospy.Time(0)
+            self._stop()
+            return True
+        # Stall guard: a fixed run that cannot move must not hold the wheels.
+        if remaining <= float(fallback["stall_distance"]) - 0.10:
+            with self.lock:
+                if self.planning_fallback is not None:
+                    self.planning_fallback["stall_distance"] = remaining
+                    self.planning_fallback["stall_stamp"] = now
+            fallback["stall_stamp"] = now
+        if (
+            now - fallback["stall_stamp"]
+        ).to_sec() >= self.planning_fallback_stall_seconds:
+            self.planning_fallback = None
+            self.last_plan_time = rospy.Time(0)
+            self._stop()
+            return True
+        bearing = math.atan2(
+            float(target[1]) - float(pose[1]), float(target[0]) - float(pose[0])
+        )
+        error = normalize_angle(bearing - float(pose[2]))
+        command = Twist()
+        if abs(error) > self.heading_tolerance:
+            command.angular.z = math.copysign(self.turn_speed, error)
+        else:
+            command.linear.x = min(self.motion_speed, self.planning_fallback_speed)
+            command.angular.z = max(-0.15, min(0.15, 0.8 * error))
+        self._publish_command(command)
+        return True
 
     def _committed_transit_along(self):
         """Landing along of the far-zone committed leg the node should run now.
@@ -3885,6 +4237,17 @@ class CoverageExplorer:
                 "navigation_preferred_clearance": self.preferred_clearance,
                 "navigation_reachable_cells": extent.navigation_reachable_cells if extent is not None else 0,
                 "navigation_blocks": self.navigation_blocks,
+                "collision_retreats": int(self.collision_retreats),
+                "collision_retreat_failures": int(self.collision_retreat_failures),
+                "collision_retreat_active": self.collision_retreat is not None,
+                "collision_retreat_reason": (
+                    self.collision_retreat.get("reason")
+                    if self.collision_retreat is not None
+                    else None
+                ),
+                "pose_trail_length": len(self.pose_trail),
+                "planning_fallback_count": int(self.planning_fallback_count),
+                "planning_fallback_active": self.planning_fallback is not None,
                 "plan_cycles": self.plan_cycles,
                 # A paused planner (missing input) is otherwise only visible as a
                 # frozen plan_cycles counter.

@@ -64,7 +64,7 @@ class ElevatorTransition:
         )
         self.lobby_search_offset = float(rospy.get_param("~lobby_search_offset", -4.6))
         self.gate_staging_offset = float(rospy.get_param("~gate_staging_offset", 0.7))
-        self.enter_distance = float(rospy.get_param("~enter_distance", 2.45))
+        self.enter_distance = float(rospy.get_param("~enter_distance", 3.00))
         self.exit_distance = float(rospy.get_param("~exit_distance", 2.10))
         self.floor1_corridor_advance = float(
             rospy.get_param("~floor1_corridor_advance", 1.80)
@@ -184,44 +184,41 @@ class ElevatorTransition:
         self.right_clearance = float("inf")
         self.elevator_portal_source = None
         self.elevator_portal_world = None
-        # Known car-door geometry, world/metric frame: [x, y, yaw, width] where
-        # the yaw points THROUGH the doorway into the car (so door_frame_offset's
-        # ``along`` is positive once the robot is inside).  The map-derived portal
-        # is the LOBBY opening - measured 3.50 m wide - and on run152 floor 1 its
-        # centre sat 0.41 m off the real 1.40 m car door, so the return entry
-        # clipped the jamb, stalled, and the ride started with the robot 0.46 m
-        # OUTSIDE the door plane and 0.53 m off the centre line.  These are the
-        # same numbers the standalone lift test uses
-        # (_elevator_door:=[1.65, 2.60, 0.0, 1.40]); the portal stays as fallback.
-        door = rospy.get_param("~elevator_door", [1.65, 2.60, 0.0, 1.40])
-        if isinstance(door, str):
-            # roslaunch hands back a string when the value did not parse as YAML;
-            # ``door[0]`` would then be "[" and the node would die at startup.
-            door = [
+        # 2026-09-15: the car-door geometry is NOT used to drive control any
+        # more -- the elevator is identified only through the temporally-confirmed
+        # map candidate (``detect_wide_lobby_openings``), exactly like the
+        # standalone faithful test.  The configured reference below is kept ONLY
+        # as a SANITY YARDSTICK (it never becomes the control source): a
+        # confirmed candidate must sit within ``elevator_candidate_max_lateral``
+        # of the reference and face it within ``elevator_candidate_max_yaw``, or
+        # it is rejected (this is what stops run159 from locking the wrong wall).
+        reference = rospy.get_param("~elevator_door", [1.65, 2.60, 0.0, 1.40])
+        if isinstance(reference, str):
+            reference = [
                 float(item)
-                for item in door.strip().strip("[]").replace(",", " ").split()
+                for item in reference.strip().strip("[]").replace(",", " ").split()
             ]
         try:
-            door_values = [float(item) for item in door]
+            reference = [float(item) for item in reference]
         except (TypeError, ValueError):
-            rospy.logerr("Bad ~elevator_door %r; falling back to the map portal", door)
-            door_values = []
-        self.elevator_door_world = (
-            (door_values[0], door_values[1], door_values[2])
-            if len(door_values) >= 3
+            reference = []
+        self.elevator_door_reference = (
+            (reference[0], reference[1], reference[2])
+            if len(reference) >= 3
             else None
         )
-        self.elevator_door_width = (
-            max(0.40, door_values[3]) if len(door_values) >= 4 else 1.40
+        self.elevator_candidate_max_lateral = max(
+            0.0, float(rospy.get_param("~elevator_candidate_max_lateral", 0.60))
         )
-        if self.elevator_door_world is not None:
-            rospy.loginfo(
-                "Known car door: centre (%.2f, %.2f) yaw %.2f width %.2f",
-                self.elevator_door_world[0],
-                self.elevator_door_world[1],
-                self.elevator_door_world[2],
-                self.elevator_door_width,
-            )
+        self.elevator_candidate_max_yaw = max(
+            0.0, float(rospy.get_param("~elevator_candidate_max_yaw", 0.25))
+        )
+        self.elevator_candidate_min_width = max(
+            0.0, float(rospy.get_param("~elevator_candidate_min_width", 0.90))
+        )
+        self.elevator_candidate_max_width = max(
+            0.0, float(rospy.get_param("~elevator_candidate_max_width", 3.80))
+        )
         # How far past the door plane counts as "inside the car" before riding.
         self.elevator_door_inset = max(
             0.05, float(rospy.get_param("~elevator_door_inset", 0.35))
@@ -268,6 +265,88 @@ class ElevatorTransition:
         self.exit_progress_stamp = None
         self.exit_retries = 0
         self.exit_retreat_until = None
+        # ------------------------------------------------------------------
+        # 2026-09-15: fusion of the standalone lift test
+        # (team_scripts/elevator_only_driver.py -- 10/10 PASS with truth, then
+        # made faithful) into the mainline transition.  Three legs are ported:
+        # corridor-start -> lift, lift -> corridor-start, and
+        # lift -> main entrance -> spawn.  The corridor start is the resolved
+        # virtual gate in the SOURCE map frame; control stays in the source
+        # frame and the doorway/return geometry uses the world metric pose,
+        # exactly as the standalone driver did.
+        # ------------------------------------------------------------------
+        self.return_phase = None
+        self.establish_phase = None
+        self.establish_center_distance = None
+        # Latched reverse distance for ESTABLISH's CLEAR_CAR phase.  It must be
+        # computed ONCE: recomputing it every cycle while ``_drive_distance``
+        # measures travel from a pinned ``travel_anchor`` makes the two shrink
+        # and grow against each other and the run stops after roughly half the
+        # required reverse (run168: moved 0.46 m of the needed 0.80 m).
+        self.establish_clear_distance = None
+        # Arrival tolerance at the corridor start (the gate).  The gate is a
+        # point on the corridor centre line, not a doorway, so this only has to
+        # stay well inside the corridor half-width.
+        self.corridor_start_tolerance = max(
+            0.15, float(rospy.get_param("~corridor_start_tolerance", 0.40))
+        )
+        # --- return-to-spawn leg (standalone RETURN_SPAWN) ----------------
+        # Latched from the first world/metric pose at mission start; the
+        # navigation frame origin is the spawn, so this is the public
+        # robot_start expressed in the frame the return geometry uses.
+        self.spawn_world = None
+        self.spawn_phase = None
+        self.spawn_axis_since = None
+        self.spawn_axis_tolerance = max(
+            0.10, float(rospy.get_param("~spawn_axis_tolerance", 0.45))
+        )
+        self.spawn_axis_timeout = max(
+            10.0, float(rospy.get_param("~spawn_axis_timeout", 120.0))
+        )
+        # The lobby U-turn is the slow manoeuvre (measured 0.08-0.15 rad/s
+        # effective, 58% success over 193 turns), so it gets a generous budget
+        # plus the walk-and-turn unstick.
+        self.spawn_turn_y = float(rospy.get_param("~spawn_turn_y", 1.80))
+        self.spawn_face_tolerance = max(
+            0.05, float(rospy.get_param("~spawn_face_tolerance", 0.12))
+        )
+        self.spawn_face_since = None
+        self.spawn_turn_timeout = max(
+            10.0, float(rospy.get_param("~spawn_turn_timeout", 150.0))
+        )
+        self.spawn_reverse_sim = None
+        self.spawn_reverse_timeout = max(
+            30.0, float(rospy.get_param("~spawn_reverse_timeout", 300.0))
+        )
+        self.spawn_reverse_retreat_until = None
+        self.spawn_reverse_retries = 0
+        self.spawn_reverse_anchor = None
+        self.spawn_reverse_progress_stamp = None
+        self.spawn_reverse_bias_until = None
+        self.spawn_reverse_yaw_bias = float(
+            rospy.get_param("~spawn_reverse_yaw_bias", 0.16)
+        )
+        # --- in-place turn with a walk-and-turn unstick (driver _turn_command)
+        self.turn_anchor_yaw = None
+        self.turn_anchor_stamp = None
+        self.turn_unstick_until = None
+        self.turn_unstick_dir = 1.0
+        self.turn_unstick_count = 0
+        self.turn_unstick_seconds = max(
+            1.0, float(rospy.get_param("~turn_unstick_seconds", 4.0))
+        )
+        self.turn_unstick_limit = max(
+            1, int(rospy.get_param("~turn_unstick_limit", 4))
+        )
+        self.turn_unstick_walk = max(
+            0.5, float(rospy.get_param("~turn_unstick_walk", 1.5))
+        )
+        self.turn_unstick_walk_speed = float(
+            rospy.get_param("~turn_unstick_walk_speed", 0.20)
+        )
+        self.turn_progress_yaw = max(
+            0.02, float(rospy.get_param("~turn_progress_yaw", 0.10))
+        )
         self.elevator_candidate_evidence = {}
         self.elevator_candidate_side = None
         self.elevator_candidate_along = None
@@ -664,6 +743,15 @@ class ElevatorTransition:
             self.base_roll = float(roll)
             self.base_pitch = float(pitch)
             self.last_pose_stamp = rospy.Time.now()
+            # Latch the spawn in the world/metric frame while the robot is still
+            # standing on it: the return leg needs the world x/y and heading of
+            # the spawn (the source origin is only valid in the source frame).
+            if self.spawn_world is None and self.state == self.WAITING:
+                self.spawn_world = (
+                    float(message.pose.position.x),
+                    float(message.pose.position.y),
+                    self._yaw(orientation),
+                )
 
     def _imu_callback(self, message):
         orientation = message.orientation
@@ -840,11 +928,6 @@ class ElevatorTransition:
                 self.elevator_candidate_evidence[key] = evidence
                 if evidence < self.elevator_candidate_confirm_cycles:
                     continue
-                known_side = self._known_door_side()
-                if known_side is not None and candidate["side"] != known_side:
-                    # A wide opening on the opposite wall is not the lift: run159
-                    # locked the L-wall opening while the car is on the R wall.
-                    continue
                 if self.elevator_portal is not None:
                     if candidate["side"] != self.elevator_candidate_side:
                         continue
@@ -852,6 +935,39 @@ class ElevatorTransition:
                         self.elevator_candidate_along is not None
                         and abs(candidate["along"] - self.elevator_candidate_along) > 1.0
                     ):
+                        continue
+                # Sanity-check the candidate against the reference before trusting
+                # it (mirrors the standalone faithful test's
+                # ``_confirm_door_candidate``).  A wide opening on the wrong wall
+                # (run159) is rejected here instead of being driven into.
+                reference = self._reference_source()
+                if reference is not None:
+                    _along, lateral = door_frame_offset(pose, reference)
+                    yaw_error = abs(
+                        normalize_angle(float(pose[2]) - float(reference[2]))
+                    )
+                    width = float(candidate["width"])
+                    if (
+                        abs(lateral) > self.elevator_candidate_max_lateral
+                        or yaw_error > self.elevator_candidate_max_yaw
+                        or not (
+                            self.elevator_candidate_min_width
+                            <= width
+                            <= self.elevator_candidate_max_width
+                        )
+                    ):
+                        rospy.logwarn_throttle(
+                            5.0,
+                            "Elevator candidate REJECTED (lateral %.2f m max %.2f, "
+                            "yaw %.2f rad max %.2f, width %.2f m in [%.2f, %.2f])",
+                            lateral,
+                            self.elevator_candidate_max_lateral,
+                            yaw_error,
+                            self.elevator_candidate_max_yaw,
+                            width,
+                            self.elevator_candidate_min_width,
+                            self.elevator_candidate_max_width,
+                        )
                         continue
                 if self.elevator_portal is None or candidate["width"] >= float(self.elevator_portal[3]):
                     self.elevator_portal = (
@@ -914,6 +1030,25 @@ class ElevatorTransition:
             self.exit_progress_stamp = None
             self.exit_retries = 0
             self.exit_retreat_until = None
+            # Fused-leg phase bookkeeping (2026-09-15).  Every entry into a
+            # transition state starts its leg from the first phase.
+            self.return_phase = None
+            self.establish_phase = None
+            self.establish_center_distance = None
+            self.establish_clear_distance = None
+            self.spawn_phase = None
+            self.spawn_axis_since = None
+            self.spawn_face_since = None
+            self.spawn_reverse_sim = None
+            self.spawn_reverse_retreat_until = None
+            self.spawn_reverse_retries = 0
+            self.spawn_reverse_anchor = None
+            self.spawn_reverse_progress_stamp = None
+            self.spawn_reverse_bias_until = None
+            self.turn_anchor_yaw = None
+            self.turn_anchor_stamp = None
+            self.turn_unstick_until = None
+            self.turn_unstick_count = 0
         rospy.loginfo("Elevator transition state -> %s", state)
         self._publish_status()
 
@@ -1197,53 +1332,36 @@ class ElevatorTransition:
         self._publish_command(0.0, math.copysign(self.turn_speed, error))
         return False
 
-    def _known_door_source(self):
-        """The KNOWN car door in the SOURCE (map) frame, or ``None``.
-
-        ``self.elevator_door_world`` is world/metric (generated_building/
-        elevator_config.yaml; the same numbers the standalone lift test passes as
-        ``_elevator_door``), while staging/boarding are planned in the source
-        frame, so it is mapped with the same paired-pose helper the world report
-        already uses.
-        """
-        with self.lock:
-            pose, source = self.pose, self.source_pose
-        if pose is None or source is None or self.elevator_door_world is None:
-            return None
-        return transform_pose_between_frames(self.elevator_door_world, pose, source)
-
-    def _known_door_side(self):
-        """``"L"``/``"R"`` of the known car door in the gate frame, or ``None``."""
-        door = self._known_door_source()
-        with self.lock:
-            gate = self.gate_source
-        if door is None or gate is None:
-            return None
-        dx = float(door[0]) - float(gate[0])
-        dy = float(door[1]) - float(gate[1])
-        lateral = -dx * math.sin(float(gate[2])) + dy * math.cos(float(gate[2]))
-        return "L" if lateral > 0.0 else "R"
-
     def _approach_portal(self):
-        """Doorway frame the approach legs must use (source frame, x/y/yaw/width).
+        """The map-detected elevator doorway (source frame, x/y/yaw/width).
 
-        The map-derived candidate is the WIDEST lobby opening and the first one
-        seen wins the side lock, so a wide opening on the opposite wall can be
-        taken for the lift: run159 locked ``LOBBY_L_3`` (L wall, along 1.60) while
-        the car is on the R wall, which put the staging point and the boarding
-        bearing on the wrong side.  The known car door is authoritative whenever
-        geometry is configured, so the approach is centred on the real doorway and
-        square to it; the candidate stays as the fallback when it is not.
+        2026-09-15: the transition used to carry the car-door coordinates as a
+        hardcoded ``~elevator_door`` launch parameter (i.e. knowing the door
+        position in advance).  That is not faithful: the scene contract only
+        permits ``/set_door_state`` and ``/call_elevator``.  The elevator is now
+        identified ONLY through the temporally-confirmed map candidate
+        (``_navigation_map_callback`` -> ``detect_wide_lobby_openings``), the
+        same "elevator candidate" the explorer publishes.  Until it is confirmed
+        this returns ``None`` and the transition simply waits for it.
         """
-        door = self._known_door_source()
-        if door is not None:
-            return (
-                float(door[0]),
-                float(door[1]),
-                float(door[2]),
-                float(self.elevator_door_width),
-            )
         return self.elevator_portal
+
+    def _reference_source(self):
+        """The SANITY reference door mapped into the source frame, or ``None``.
+
+        The reference (world ``~elevator_door``) is never used to control; it is
+        only the yardstick against which a detected candidate is validated
+        (mirrors the standalone faithful test's ``door_reference``).  Mapped with
+        the paired gate transform, which the handoff showed is accurate where the
+        live pose pair is not.
+        """
+        with self.lock:
+            gate, gate_source = self.gate, self.gate_source
+        if gate is None or gate_source is None or self.elevator_door_reference is None:
+            return None
+        return transform_pose_between_frames(
+            self.elevator_door_reference, gate, gate_source
+        )
 
     def _elevator_staging_target(self):
         """Return the source-map staging point and heading for the portal."""
@@ -1340,15 +1458,17 @@ class ElevatorTransition:
         return False
 
     def _entry_inside_car(self):
-        """How far past the car door plane the robot is (``None`` if unknown).
+        """How far past the door plane the robot is (``None`` if unknown).
 
         ``door_frame_offset``'s ``along`` grows through the doorway into the car,
-        so a positive value means the robot is inside.  Uses the KNOWN door
-        geometry in the world frame - the same frame as ``self.pose``.
+        so a positive value means the robot is inside.  Measured against the
+        map-detected candidate in the SOURCE frame (same frame as
+        ``self.source_pose``); the hardcoded world door is gone (2026-09-15).
         """
-        if self.pose is None or self.elevator_door_world is None:
+        portal = self._approach_portal()
+        if self.source_pose is None or portal is None:
             return None
-        along, _lateral = door_frame_offset(self.pose, self.elevator_door_world)
+        along, _lateral = door_frame_offset(self.source_pose, portal)
         return float(along)
 
     def _entry_outside_car(self):
@@ -1494,36 +1614,17 @@ class ElevatorTransition:
                 "ENTER_ELEVATOR",
                 "ENTER_FLOOR_1_ELEVATOR_RETURN",
             ):
-                # Prefer the KNOWN car-door centre line (world frame): the
-                # map-derived portal below is the 3.50 m LOBBY opening, whose
-                # centre sat 0.41 m off the real 1.40 m car door on run152 floor 1
-                # - the robot then clipped the jamb, stalled, and rode from
-                # outside the car.  Same numbers as the standalone lift test.
-                known = None
-                if self.pose is not None and self.elevator_door_world is not None:
-                    known = door_frame_offset(self.pose, self.elevator_door_world)
-                portal = self.elevator_portal
-                if known is not None:
-                    _along, lateral = known
-                    lateral_error = max(-0.25, min(0.25, -0.9 * float(lateral)))
-                    rospy.loginfo_throttle(
-                        1.0,
-                        "Entry centring (known door): along=%.2f lateral=%.2f "
-                        "-> yaw bias %+.3f",
-                        _along,
-                        lateral,
-                        lateral_error,
-                    )
-                elif portal is not None and len(portal) >= 3:
-                    # Fallback: the map-derived doorway frame.  +lateral is to the
-                    # robot's left, so a negative yaw command steers back to the
-                    # centre.  The old clearance-difference proxy
-                    # (0.10 * (right - left)) could not correct a systematic drift.
+                # Centre on the map-detected candidate (source frame).  The
+                # hardcoded car-door centre line is gone (2026-09-15): the lift
+                # is identified only by the candidate.  +lateral is to the
+                # robot's left, so a negative yaw command steers back to centre.
+                portal = self._approach_portal()
+                if portal is not None and len(portal) >= 3:
                     _along, lateral = door_frame_offset(pose, portal)
                     lateral_error = max(-0.25, min(0.25, -0.9 * float(lateral)))
                     rospy.loginfo_throttle(
                         1.0,
-                        "Entry centring (map portal): along=%.2f lateral=%.2f "
+                        "Entry centring (map candidate): along=%.2f lateral=%.2f "
                         "-> yaw bias %+.3f",
                         _along,
                         lateral,
@@ -1586,6 +1687,486 @@ class ElevatorTransition:
         except (rospy.ROSException, rospy.ServiceException) as error:
             rospy.logwarn_throttle(3.0, "Waiting for gait policy switch: %s", error)
             return False
+
+    # ------------------------------------------------------------------
+    # 2026-09-15: helpers ported from team_scripts/elevator_only_driver.py
+    # (the standalone lift test that passed 10/10 with truth and was then made
+    # faithful).  They are shared by the three fused legs.
+    # ------------------------------------------------------------------
+    def _corridor_gate(self):
+        """The corridor start (virtual gate) in the SOURCE map frame."""
+        with self.lock:
+            return self.floor1_gate or self.floor0_gate_source or self.gate_source
+
+    @staticmethod
+    def _frame_offset(point, origin):
+        """(along, lateral) of ``point`` in the frame ``origin=(x, y, yaw)``."""
+        dx = float(point[0]) - float(origin[0])
+        dy = float(point[1]) - float(origin[1])
+        cosine = math.cos(float(origin[2]))
+        sine = math.sin(float(origin[2]))
+        return (dx * cosine + dy * sine, -dx * sine + dy * cosine)
+
+    @staticmethod
+    def _frame_point(origin, along, lateral=0.0):
+        """Point ``along``/``lateral`` (source frame) from ``origin=(x, y, yaw)``."""
+        cosine = math.cos(float(origin[2]))
+        sine = math.sin(float(origin[2]))
+        return (
+            float(origin[0]) + along * cosine - lateral * sine,
+            float(origin[1]) + along * sine + lateral * cosine,
+        )
+
+    def _world_to_source_point(self, world_xy):
+        """Map a world/metric point into the LIO source frame (driver _to_source)."""
+        with self.lock:
+            world, source = self.pose, self.source_pose
+        if world is None or source is None:
+            return None
+        delta = normalize_angle(source[2] - world[2])
+        cosine = math.cos(delta)
+        sine = math.sin(delta)
+        dx = float(world_xy[0]) - float(world[0])
+        dy = float(world_xy[1]) - float(world[1])
+        return (
+            source[0] + cosine * dx - sine * dy,
+            source[1] + sine * dx + cosine * dy,
+        )
+
+    def _world_to_source_yaw(self, world_yaw):
+        """Map a world heading into the source frame (driver _to_source_yaw)."""
+        with self.lock:
+            world, source = self.pose, self.source_pose
+        if world is None or source is None:
+            return None
+        return normalize_angle(float(world_yaw) + source[2] - world[2])
+
+    def _elevator_staging_source(self):
+        """Stand-off point in front of the car door, SOURCE frame.
+
+        The map-detected candidate pulled back by ``staging_distance`` along its
+        normal (which points INTO the car), so the point sits in the lobby on the
+        door centre line.  The hardcoded world door is gone (2026-09-15).
+        """
+        door = self._approach_portal()
+        if door is None:
+            return None
+        facing = float(door[2])
+        return (
+            float(door[0]) - self.staging_distance * math.cos(facing),
+            float(door[1]) - self.staging_distance * math.sin(facing),
+        )
+
+    def _center_on_corridor_axis(self, source_pose, gate, distance_attr):
+        """One control cycle of the corridor-centreline alignment.
+
+        Ported from the standalone driver's CORRIDOR_CENTRE state: the robot
+        must sit on the corridor axis before the U-turn (in a 2.2 m corridor an
+        off-axis arrival wedges the mouth wall).  Returns True when centred.
+        """
+        _along, lateral = self._frame_offset(source_pose, gate)
+        if abs(lateral) <= self.corridor_center_tolerance:
+            setattr(self, distance_attr, None)
+            self._stop()
+            return True
+        heading = normalize_angle(
+            float(gate[2]) - math.pi / 2.0
+            if lateral > 0.0
+            else float(gate[2]) + math.pi / 2.0
+        )
+        distance = getattr(self, distance_attr)
+        if distance is None:
+            if not self._align(source_pose, heading):
+                return False
+            setattr(self, distance_attr, abs(float(lateral)))
+            self.elevator_heading = heading
+            self.travel_anchor = source_pose[:2]
+            self.progress_pose = source_pose[:2]
+            self.progress_stamp = rospy.Time.now()
+            return False
+        self.elevator_heading = heading
+        if not self._align(source_pose, heading):
+            return False
+        if self._drive_distance(
+            source_pose,
+            float(distance),
+            min(self.motion_speed, self.lobby_approach_speed),
+            max(0.0, float(distance) - 0.2),
+        ):
+            setattr(self, distance_attr, None)
+            self._stop()
+            return True
+        return False
+
+    def _control_return_to_lift(self, source_pose, gate):
+        """One cycle of the fused corridor-start -> lift approach.
+
+        Ported from the standalone driver's corridor-mouth cycle
+        (CORRIDOR_CENTRE -> TURN_AROUND -> BACK_TO_LIFT).  Used by BOTH the
+        floor-0 return (RETURN_TO_ELEVATOR) and the upper-floor return
+        (RETURN_TO_FLOOR_1_GATE), so every "corridor start -> lift" leg follows
+        the method that passed 10/10.  Returns True once the robot is staged in
+        front of the car door, ready for the ALIGN/ENTER pair.
+        """
+        phase = self.return_phase or "TO_CORRIDOR_START"
+        if phase == "TO_CORRIDOR_START":
+            # Interface contract (user): going to the lift must first reach the
+            # corridor start -- the virtual gate the explorer anchors floor 0 on.
+            if self._drive_planned_to(
+                source_pose,
+                gate[:2],
+                min(self.motion_speed, self.lobby_approach_speed),
+                arrival_tolerance=self.corridor_start_tolerance,
+            ):
+                self.return_phase = "CORRIDOR_CENTRE"
+                self._stop()
+            return False
+        if phase == "CORRIDOR_CENTRE":
+            if self._center_on_corridor_axis(
+                source_pose, gate, "return_center_distance"
+            ):
+                self.return_phase = "TURN_TO_LIFT"
+            return False
+        if phase == "TURN_TO_LIFT":
+            # U-turn at the corridor start.  Uses the walk-and-turn unstick so a
+            # gait lock-up fails loudly instead of hanging until the run timeout.
+            reverse_heading = normalize_angle(float(gate[2]) + math.pi)
+            error = normalize_angle(reverse_heading - float(source_pose[2]))
+            if abs(error) <= self.heading_tolerance:
+                self._stop()
+                self.turn_anchor_yaw = None
+                self.turn_anchor_stamp = None
+                self.turn_unstick_until = None
+                self.turn_unstick_count = 0
+                self.return_phase = "TO_STAGING"
+            else:
+                self._turn_command(error)
+            return False
+        # TO_STAGING -- the driver's staging_world(): the known car door pulled
+        # back by staging_distance along the door normal.
+        staging = self._elevator_staging_source()
+        portal = self._approach_portal()
+        if staging is None or portal is None:
+            self._stop()
+            self._fail("ELEVATOR_STAGING_UNKNOWN")
+            return False
+        if self._drive_planned_to(
+            source_pose,
+            staging,
+            min(self.motion_speed, self.lobby_approach_speed),
+            arrival_tolerance=self.elevator_approach_tolerance,
+        ):
+            # The doorway normal in the source frame; every pose from here on
+            # stays in source, so no cross-frame conversion can distort it.
+            self.elevator_heading = float(portal[2])
+            self.elevator_portal_source = "WIDE_PORTAL_MAP"
+            return True
+        return False
+
+    def _control_align_door(self, source_pose):
+        """One cycle of the fused ALIGN_DOOR (driver's proven two-condition gate).
+
+        The nose must point along the doorway normal AND the robot must sit on
+        the doorway centre line.  Returns True when both hold.
+
+        2026-09-15 fix (first fused run froze here for 45+ sim s): the lateral
+        slide is a MEASURED run, never ``_drive_to``.  ``_drive_to`` floors its
+        arrival tolerance at ``target_tolerance`` (0.35 m), which is LOOSER than
+        the 0.15 m centre-line gate, so a 0.25 m lateral offset was immediately
+        declared "arrived", the node only called ``_stop()``, and cmd_vel stayed
+        exactly (0, 0) for ever -- the same deadlock shape as run88/run162.
+        """
+        portal = self._approach_portal()
+        if portal is None or source_pose is None:
+            self._stop()
+            return False
+        along, lateral = self._frame_offset(source_pose, portal)
+        if abs(lateral) > self.entry_lateral_tolerance:
+            if self.lateral_correction_distance is None:
+                # Aim at the robot's projection onto the door centre line at the
+                # current stand-off; ``min(along, -0.30)`` keeps the slide
+                # outside the car, exactly like the standalone driver.
+                axis_target = self._frame_point(portal, min(float(along), -0.30))
+                distance = planar_distance(source_pose, axis_target)
+                if distance <= 0.02:
+                    self._stop()
+                    return False
+                heading = target_heading(source_pose, axis_target)
+                self.lateral_correction_distance = float(distance)
+                self.lateral_correction_heading = float(heading)
+                self.elevator_heading = float(heading)
+                self.travel_anchor = source_pose[:2]
+                self.progress_pose = source_pose[:2]
+                self.progress_stamp = rospy.Time.now()
+                self._align(source_pose, heading)
+                return False
+            heading = float(self.lateral_correction_heading)
+            self.elevator_heading = heading
+            if not self._align(source_pose, heading):
+                return False
+            if self._drive_distance(
+                source_pose,
+                float(self.lateral_correction_distance),
+                min(self.motion_speed, self.lobby_approach_speed),
+                max(0.0, float(self.lateral_correction_distance) - 0.10),
+            ):
+                self.lateral_correction_distance = None
+                self.lateral_correction_heading = None
+                self._stop()
+            return False
+        if self._align(source_pose, float(portal[2])):
+            self.elevator_heading = float(portal[2])
+            return True
+        return False
+
+    def _turn_command(self, error, speed=None, stall_seconds=None, limit=None):
+        """In-place turn with a walk-and-turn unstick (driver ``_turn_command``).
+
+        A quadruped turn can lock up on the spot; walking a little while turning
+        breaks the gait lock.  Bounded so a jammed turn fails loudly instead of
+        grinding until the run timeout.
+        """
+        speed = self.turn_speed if speed is None else float(speed)
+        stall_seconds = (
+            self.turn_unstick_seconds if stall_seconds is None
+            else float(stall_seconds)
+        )
+        limit = self.turn_unstick_limit if limit is None else int(limit)
+        now = rospy.Time.now()
+        with self.lock:
+            pose = self.source_pose
+        if pose is not None:
+            if self.turn_anchor_yaw is None or self.turn_anchor_stamp is None:
+                self.turn_anchor_yaw = float(pose[2])
+                self.turn_anchor_stamp = now
+            else:
+                turned = abs(normalize_angle(float(pose[2]) - self.turn_anchor_yaw))
+                if turned >= self.turn_progress_yaw:
+                    self.turn_anchor_yaw = float(pose[2])
+                    self.turn_anchor_stamp = now
+                elif (now - self.turn_anchor_stamp).to_sec() >= stall_seconds:
+                    if self.turn_unstick_count >= limit:
+                        self.turn_unstick_count = 0
+                        self._fail("TURN_BLOCKED_IN_{}".format(self.state))
+                        return
+                    self.turn_unstick_dir = -self.turn_unstick_dir
+                    self.turn_unstick_until = now + rospy.Duration(
+                        self.turn_unstick_walk
+                    )
+                    self.turn_unstick_count += 1
+                    self.turn_anchor_yaw = float(pose[2])
+                    self.turn_anchor_stamp = now
+                    rospy.logwarn(
+                        "Turn made no progress for %.1f s in %s; walk-and-turn "
+                        "unstick %+.2f m/s (count %d)",
+                        stall_seconds,
+                        self.state,
+                        self.turn_unstick_dir * self.turn_unstick_walk_speed,
+                        self.turn_unstick_count,
+                    )
+        if self.turn_unstick_until is not None and now < self.turn_unstick_until:
+            self._publish_command(
+                self.turn_unstick_dir * self.turn_unstick_walk_speed,
+                math.copysign(speed, error),
+            )
+            return
+        self.turn_unstick_until = None
+        self._publish_command(0.0, math.copysign(speed, error))
+
+    def _finish_spawn_return(self):
+        self._stop()
+        self.returned_to_spawn = True
+        self.two_floor_mission_complete = True
+        self._set_state("RETURNED_TO_SPAWN")
+        self.mission_complete_pub.publish(Bool(data=True))
+        rospy.loginfo("Mission complete: returned to spawn")
+
+    def _finish_floor_topology(self, reason, source_gate, gate):
+        """Hand the freshly entered floor to its explorer from the corridor start.
+
+        The explorer anchors its ``initial_forward_distance`` run on the pose it
+        starts from, so the elevator must leave the robot ON the corridor start
+        for the upper-floor fixed forward to end at the floor-0 14.5 node.
+        """
+        self.establish_started_wall = None
+        self.floor1_gate = tuple(
+            self.floor0_gate_source or source_gate or gate or ()
+        )
+        self.floor1_topology_isolated = True
+        self.transition_complete = True
+        self._stop()
+        self._set_state("FLOOR_1_READY")
+        # The floor's explorer restores the plane gait for exploration (it runs
+        # the same entrance transit as floor 0), so the next ride must re-assert
+        # the stair gait for the 6 cm threshold rather than trusting this flag.
+        self.gait_policy_selected = False
+        self.complete_pub.publish(Bool(data=True))
+        self.floor1_context_published = True
+        self.floor1_complete = False
+        self._publish_floor_context(reason)
+        self._publish_status()
+
+    def _control_spawn_return(self, source_pose):
+        """Lift -> main entrance -> spawn, ported from the driver's RETURN_SPAWN.
+
+        Three phases: line up on the doorway axis INSIDE the lobby (where the
+        estimate is good and the pivot is safe), turn to the spawn heading
+        indoors, then REVERSE straight out through the entrance, down the 8 cm
+        apron and across the forecourt.  Reversing keeps the feature-rich
+        building side facing the lidar, which is what bounds the drift that
+        killed the forward attempt (1.5-3.4 m measured).  Arrival is judged on
+        position only: the official criteria do not score a final heading.
+        """
+        spawn = self.spawn_world
+        with self.lock:
+            world = self.pose
+        if source_pose is None or world is None or spawn is None:
+            self._stop()
+            return
+        phase = self.spawn_phase or "AXIS"
+        if phase == "AXIS":
+            axis_point = (float(spawn[0]), self.spawn_turn_y)
+            distance = planar_distance(world[:2], axis_point)
+            if distance <= self.spawn_axis_tolerance:
+                self.spawn_phase = "FACE"
+                self._stop()
+                return
+            target_source = self._world_to_source_point(axis_point)
+            if target_source is None:
+                self._stop()
+                return
+            if self.spawn_axis_since is None:
+                self.spawn_axis_since = rospy.Time.now()
+                rospy.loginfo(
+                    "Return leg: lining up on the doorway axis at (%.2f, %.2f) "
+                    "for the indoor U-turn",
+                    axis_point[0], axis_point[1],
+                )
+            elif (
+                rospy.Time.now() - self.spawn_axis_since
+            ).to_sec() > self.spawn_axis_timeout:
+                self._fail("SPAWN_AXIS_TIMEOUT_DIST_{:.2f}M".format(distance))
+                return
+            if self._drive_planned_to(
+                source_pose,
+                target_source,
+                min(self.motion_speed, self.lobby_approach_speed),
+                arrival_tolerance=self.spawn_axis_tolerance,
+            ):
+                self.spawn_phase = "FACE"
+                self._stop()
+            return
+        if phase == "FACE":
+            target_source_yaw = self._world_to_source_yaw(float(spawn[2]))
+            if target_source_yaw is None:
+                self._stop()
+                return
+            error = normalize_angle(target_source_yaw - source_pose[2])
+            if abs(error) <= self.spawn_face_tolerance:
+                self.spawn_phase = "REVERSE"
+                self.spawn_reverse_sim = None
+                self.turn_anchor_yaw = None
+                self.turn_anchor_stamp = None
+                self.turn_unstick_until = None
+                self.turn_unstick_count = 0
+                self._stop()
+                return
+            if self.spawn_face_since is None:
+                self.spawn_face_since = rospy.Time.now()
+            elif (
+                rospy.Time.now() - self.spawn_face_since
+            ).to_sec() > self.spawn_turn_timeout:
+                self._fail(
+                    "SPAWN_FACE_TIMEOUT_YAW_ERROR_{:.2f}RAD".format(abs(error))
+                )
+                return
+            self._turn_command(error)
+            return
+        # REVERSE
+        distance = planar_distance(world[:2], spawn[:2])
+        if distance <= self.target_tolerance:
+            self._finish_spawn_return()
+            return
+        now = rospy.Time.now()
+        if self.spawn_reverse_sim is None:
+            self.spawn_reverse_sim = now
+            rospy.loginfo(
+                "Return leg: REVERSING out to the spawn (est %.2f, %.2f; spawn "
+                "yaw %.2f), centred on the doorway jambs while crossing",
+                world[0], world[1], float(spawn[2]),
+            )
+        if (now - self.spawn_reverse_sim).to_sec() > self.spawn_reverse_timeout:
+            self._fail("SPAWN_REVERSE_TIMEOUT_DIST_{:.2f}M".format(distance))
+            return
+        if self.spawn_reverse_retreat_until is not None:
+            if now < self.spawn_reverse_retreat_until:
+                self._publish_command(abs(self.entry_retreat_speed), 0.0)
+                return
+            self.spawn_reverse_retreat_until = None
+            self.spawn_reverse_anchor = world[:2]
+            self.spawn_reverse_progress_stamp = now
+            self.spawn_reverse_bias_until = now + rospy.Duration(
+                self.entry_retreat_seconds
+            )
+        if self.spawn_reverse_progress_stamp is None:
+            self.spawn_reverse_progress_stamp = now
+            self.spawn_reverse_anchor = world[:2]
+        elif (
+            self.spawn_reverse_anchor is None
+            or planar_distance(world[:2], self.spawn_reverse_anchor) >= 0.15
+        ):
+            self.spawn_reverse_anchor = world[:2]
+            self.spawn_reverse_progress_stamp = now
+        elif (now - self.spawn_reverse_progress_stamp).to_sec() >= self.exit_stall_seconds:
+            if self.spawn_reverse_retries >= self.exit_retry_limit:
+                self._fail(
+                    "SPAWN_REVERSE_NO_PROGRESS_AFTER_{}_RETRIES_DIST_{:.2f}M".format(
+                        self.spawn_reverse_retries, distance
+                    )
+                )
+                return
+            self.spawn_reverse_retries += 1
+            self.spawn_reverse_retreat_until = now + rospy.Duration(
+                self.entry_retreat_seconds
+            )
+            self.spawn_reverse_progress_stamp = now
+            self.spawn_reverse_anchor = world[:2]
+            self._stop()
+            rospy.logwarn(
+                "Return leg: caught on the entrance apron/step (est %.2f, %.2f); "
+                "retreating %.1f s and retrying the reverse (%d/%d)",
+                world[0], world[1], self.entry_retreat_seconds,
+                self.spawn_reverse_retries, self.exit_retry_limit,
+            )
+            return
+        heading = float(world[2])
+        if (
+            self.spawn_reverse_bias_until is not None
+            and now < self.spawn_reverse_bias_until
+        ):
+            heading += self.spawn_reverse_yaw_bias * (
+                1.0 if self.spawn_reverse_retries % 2 else -1.0
+            )
+        dx = float(spawn[0]) - float(world[0])
+        dy = float(spawn[1]) - float(world[1])
+        lateral = -dx * math.sin(heading) + dy * math.cos(heading)
+        jamb_term = 0.0
+        if (
+            math.isfinite(self.left_clearance)
+            and math.isfinite(self.right_clearance)
+            and abs(float(world[0])) <= 1.6
+            and -1.0 <= float(world[1]) <= 3.0
+        ):
+            # Doorway-jamb centring: a laser term that needs no truth and is
+            # exactly what the feature-poor lobby cannot give the estimator.
+            jamb_term = max(
+                -0.18, min(0.18, 0.12 * (self.right_clearance - self.left_clearance))
+            )
+        speed = min(self.motion_speed, max(0.12, 1.0 * distance))
+        self._publish_command(
+            -abs(speed),
+            max(-0.30, min(0.30, -0.5 * lateral + jamb_term)),
+        )
 
     def _control(self, _event):
         with self.lock:
@@ -1670,209 +2251,24 @@ class ElevatorTransition:
             return
 
         if state == "RETURN_TO_ELEVATOR":
-            staging_target, portal_heading = self._elevator_staging_target()
-            with self.lock:
-                gate = self.gate_source
-            # The approach frame is the KNOWN door when available (see
-            # _approach_portal): the reverse stand-off below is measured from it,
-            # so a wrong-side map candidate can no longer stage the robot across
-            # the corridor.
-            portal = self._approach_portal()
+            # Fused from the standalone lift test (2026-09-15).  Shared with the
+            # upper-floor return (RETURN_TO_FLOOR_1_GATE): corridor start ->
+            # centreline -> U-turn -> staged stand-off, then ALIGN/ENTER.
+            gate = self._corridor_gate()
             if source_pose is None or gate is None:
                 self._stop()
                 return
-            cosine, sine = math.cos(float(gate[2])), math.sin(float(gate[2]))
-            lateral = (
-                -(source_pose[0] - gate[0]) * sine
-                + (source_pose[1] - gate[1]) * cosine
-            )
-            # Phase 0 - reach the corridor centreline first.  Floor completion
-            # can latch while the robot is still on a doorway line (run118:
-            # lateral -1.06 m at TASK_REGION_COMPLETE), and reversing from there
-            # drags the robot along the wall.
-            if abs(lateral) > self.corridor_center_tolerance:
-                if self.return_center_distance is None:
-                    toward_center = normalize_angle(
-                        float(gate[2]) - math.pi / 2.0
-                        if lateral > 0.0
-                        else float(gate[2]) + math.pi / 2.0
-                    )
-                    if not self._align(source_pose, toward_center):
-                        return
-                    self.elevator_heading = toward_center
-                    self.return_center_distance = abs(lateral)
-                    self.travel_anchor = source_pose[:2]
-                    self.progress_pose = source_pose[:2]
-                    self.progress_stamp = rospy.Time.now()
-                    return
-                if not self._drive_distance(
-                    source_pose,
-                    self.return_center_distance,
-                    min(self.motion_speed, self.lobby_approach_speed),
-                    max(0.0, self.return_center_distance - 0.3),
-                ):
-                    return
-                self.return_center_distance = None
-                self._stop()
-                return
-            # Phase 1 - committed return leg.  Reuses the standalone driver's
-            # mechanism (its ``_drive_heading``): hold the reverse corridor
-            # heading and run one measured straight distance to the CORRIDOR-MOUTH
-            # area (user rule: "align to the corridor reverse direction and walk a
-            # long way to the corridor doorway area; the rest is the elevator
-            # module's job").  The leg no longer depends on the doorway frame at
-            # all: measuring it from the doorway (or, worse, from the KNOWN door,
-            # whose yaw points through the door i.e. laterally +/-x) made the
-            # landing sit past the mouth inside the lobby while the leg steered
-            # ACROSS the corridor, fighting the reverse-corridor alignment - run161
-            # turned that into a 180 deg flip-flop of 20 s turns and 0.4 m steps.
-            if not self.return_standoff_done:
-                if self.return_standoff_distance is None:
-                    reverse_heading = normalize_angle(float(gate[2]) + math.pi)
-                    if not self._align(source_pose, reverse_heading):
-                        return
-                    # ``_drive_distance`` holds ``elevator_heading`` while it
-                    # runs; a missing heading raised inside the control callback
-                    # and froze cmd_vel at zero for the whole leg.
-                    self.elevator_heading = reverse_heading
-                    along_now = (
-                        (source_pose[0] - gate[0]) * cosine
-                        + (source_pose[1] - gate[1]) * sine
-                    )
-                    self.return_standoff_distance = along_now - self.return_mouth_along
-                    self.travel_anchor = source_pose[:2]
-                    self.progress_pose = source_pose[:2]
-                    self.progress_stamp = rospy.Time.now()
-                    if self.return_standoff_distance <= self.elevator_approach_tolerance:
-                        self.return_standoff_done = True
-                        self._stop()
-                    return
-                if not self._drive_distance(
-                    source_pose,
-                    self.return_standoff_distance,
-                    # The return leg down the corridor is 20-31 m, so it runs at
-                    # the tested flat corridor speed (0.60) instead of the lobby
-                    # approach speed (0.45) that is meant for the last metres in
-                    # front of the car.  Measured on run152 floor 0: the
-                    # RETURN_TO_ELEVATOR state took 101 s for ~31 m, i.e. 0.31 m/s
-                    # average, which is the "going to the lift takes for ever"
-                    # complaint.  ``lobby_approach_speed`` still caps phase 2.
-                    self.motion_speed,
-                    max(0.0, self.return_standoff_distance - 0.5),
-                ):
-                    return
-                self.return_standoff_done = True
-                self._stop()
-                return
-            # Phase 2 - from the stand-off, hand the remainder back to A*.
-            if staging_target is not None:
-                reached = self._drive_planned_to(
-                    source_pose,
-                    staging_target,
-                    arrival_tolerance=self.elevator_approach_tolerance,
-                )
-            else:
-                self._stop()
-                reached = False
-            if reached:
-                # portal_heading is a source-map yaw, and so is every pose used
-                # from here on: the leg stays in one frame.
-                self.elevator_heading = portal_heading
-                self.elevator_portal_source = "WIDE_PORTAL_MAP"
+            if self._control_return_to_lift(source_pose, gate):
                 self._set_state("ALIGN_ELEVATOR")
         elif state == "ALIGN_ELEVATOR":
-            # The map candidate is rechecked during the A* approach.  Refresh
-            # the heading once more at the staging point so a small candidate
-            # correction does not send the robot into the jamb.
-            staging_target, mapped_heading = self._elevator_staging_target()
-            if mapped_heading is not None and self.elevator_portal_source == "WIDE_PORTAL_MAP":
-                self.elevator_heading = mapped_heading
-            # Face the doorway *and* stand on its centre line before committing.
-            # The staging point is the portal projected onto the gate axis, which
-            # for a lobby is exactly the doorway centre line; so an off-centre
-            # robot simply drives the approach again instead of entering askew.
-            portal_source = self._approach_portal()
-            if portal_source is not None and source_pose is not None:
-                _along, lateral = door_frame_offset(source_pose, portal_source)
-                if abs(lateral) > self.entry_lateral_tolerance:
-                    rospy.logwarn_throttle(
-                        2.0,
-                        "ALIGN_ELEVATOR: %.2f m off the doorway centre line "
-                        "(tolerance %.2f); re-approaching the staging point",
-                        lateral,
-                        self.entry_lateral_tolerance,
-                    )
-                    if source_pose is not None and staging_target is not None:
-                        if self.lateral_correction_distance is None and not \
-                                self._drive_planned_to(
-                                    source_pose,
-                                    staging_target,
-                                    arrival_tolerance=self.entry_lateral_tolerance,
-                                ):
-                            return
-                        # "Arrived at the staging point" is granted at
-                        # max(target_tolerance, entry_lateral_tolerance) = 0.35 m
-                        # (``_drive_planned_to`` floors its arrival tolerance at
-                        # target_tolerance) - LOOSER than the 0.15 m centre-line
-                        # gate that sent us here.  The two measurements are
-                        # orthogonal: the staging point is the door centre
-                        # projected onto the gate axis / corridor centreline, so
-                        # the distance to it runs ALONG the corridor while
-                        # ``lateral`` is measured ACROSS the door centre line.
-                        # The robot can therefore be "arrived" and still off the
-                        # line, and the call above is then a no-op that only calls
-                        # _stop(): the outer condition stays true for ever and the
-                        # node deadlocks silently.  run162 sat here for 188 sim s
-                        # with cmd_vel exactly (0, 0), fault null and
-                        # route_target null (run88 hit the same shape: 0.709 m of
-                        # lateral against a 0.25 m limit with arrival at 0.80 m).
-                        #
-                        # Walk the remainder off directly instead of retrying the
-                        # same no-op.  The door-frame lateral axis is the corridor
-                        # axis in this lobby, so this is one short straight run
-                        # along the corridor - bounded by the arrival tolerance,
-                        # hence <= 0.35 m - followed by a re-align to the doorway
-                        # normal on the next cycle.
-                        if self.lateral_correction_distance is None:
-                            correction_heading = normalize_angle(
-                                float(portal_source[2]) + math.pi / 2.0
-                            )
-                            if lateral > 0.0:
-                                correction_heading = normalize_angle(
-                                    correction_heading + math.pi
-                                )
-                            self.lateral_correction_distance = abs(float(lateral))
-                            self.lateral_correction_heading = correction_heading
-                            self.travel_anchor = source_pose[:2]
-                            self.progress_pose = source_pose[:2]
-                            self.progress_stamp = rospy.Time.now()
-                            self.elevator_heading = correction_heading
-                            self._align(source_pose, correction_heading)
-                            return
-                    else:
-                        self._stop()
-                    if self.lateral_correction_distance is not None:
-                        # Correction in flight.  ``_drive_distance`` holds
-                        # ``elevator_heading`` while it runs, so it is set first.
-                        self.elevator_heading = self.lateral_correction_heading
-                        if not self._align(source_pose, self.lateral_correction_heading):
-                            return
-                        if self._drive_distance(
-                            source_pose,
-                            self.lateral_correction_distance,
-                            min(self.motion_speed, self.lobby_approach_speed),
-                            max(0.0, self.lateral_correction_distance - 0.1),
-                        ):
-                            rospy.loginfo(
-                                "ALIGN_ELEVATOR: lateral correction of %.2f m "
-                                "finished; re-aligning with the doorway",
-                                self.lateral_correction_distance,
-                            )
-                            self.lateral_correction_distance = None
-                            self.lateral_correction_heading = None
-                            self._stop()
-                    return
-            if self._align(source_pose, self.elevator_heading):
+            # Ported from the standalone driver's ALIGN_DOOR (2026-09-15): two
+            # conditions before the committed run -- the nose points along the
+            # doorway normal AND the robot sits on the doorway centre line.  The
+            # old version re-drove the staging point and could deadlock when
+            # "arrived at staging" (0.35 m) was looser than the centre-line gate
+            # (0.15 m) and the two measurements were orthogonal (run162: 188 sim
+            # seconds of cmd_vel exactly (0, 0)).
+            if self._control_align_door(source_pose):
                 self.travel_anchor = source_pose[:2]
                 self.progress_pose = source_pose[:2]
                 self.progress_stamp = rospy.Time.now()
@@ -1893,32 +2289,26 @@ class ElevatorTransition:
                 self.crossing_speed,
                 self.minimum_entry_progress,
             ):
-                # Boarding proof (run84): the entry distance alone was treated as
-                # "the robot is in the car", so a stale portal plus a fixed entry
-                # distance declared boarding with the robot 4.1 m away in the
-                # lobby and the mission rode up without it.  Require the pose to
-                # be at the car doorway before the ride starts; when the portal
-                # geometry is unknown the ride is still allowed (geometry is a
-                # guard here, never a new blocking condition).
-                # Measured in the map frame, the frame the doorway geometry
-                # comes from, so no cross-frame conversion can distort it.
-                portal = self._approach_portal()
-                offset = (
-                    math.hypot(
-                        float(source_pose[0]) - float(portal[0]),
-                        float(source_pose[1]) - float(portal[1]),
-                    )
-                    if portal is not None
-                    else 0.0
-                )
-                if offset > self.board_distance_tolerance:
+                # Boarding proof (run84 + run166): the entry distance alone was
+                # once treated as "the robot is in the car", so a pose 4.1 m away
+                # in the lobby rode up alone -- a guard is needed, but it must be
+                # SIGNED.  It used an UNSIGNED distance to the doorway (hypot), so
+                # run166, which pressed against the car's rear wall 1.67 m PAST
+                # the door plane (the normal contained end of the entry run), was
+                # reported as "1.67 m from the car doorway" and refused the ride
+                # for ever, oscillating against the rear wall.  ``_entry_inside_car``
+                # gives the signed door-frame along (+ = inside the car); reject
+                # only when the robot is still clearly in FRONT of the plane.
+                # Any positive depth is contained, and ``_entry_outside_car``
+                # below remains the strict "did it actually cross" gate.
+                inside = self._entry_inside_car()
+                if inside is not None and inside < 0.0:
                     rospy.logwarn_throttle(
                         2.0,
                         "ENTER_ELEVATOR: entry distance driven but the robot is "
-                        "%.2f m from the car doorway (tolerance %.2f); aligning "
-                        "again instead of riding with the robot outside",
-                        offset,
-                        self.board_distance_tolerance,
+                        "still %.2f m OUTSIDE the car door plane; stopping instead "
+                        "of riding with the robot outside",
+                        -inside,
                     )
                     self._stop()
                     return
@@ -2041,7 +2431,16 @@ class ElevatorTransition:
                 self.establish_started_wall = time.time()
                 self._set_state("ESTABLISH_FLOOR_1_TOPOLOGY")
         elif state == "ESTABLISH_FLOOR_1_TOPOLOGY":
-            # The corridor point is a soft hint, not a gate: with one 2D map per
+            # Fused from the standalone lift test (2026-09-15).  This is the
+            # "lift -> corridor start" leg: clear the car mouth first (the
+            # driver's TO_CORRIDOR sub-leg 0), run to the corridor start, then
+            # align on the corridor axis (CORRIDOR_CENTRE).  The floor explorer
+            # is handed a robot standing ON the corridor start, so its own
+            # fixed forward starts there; on floors 2/3 that forward is 4.00 m
+            # (the same physical node as floor 0's 14.5 m transit), while floor
+            # 0 keeps its outdoor entrance transit.
+            #
+            # The corridor start is a soft hint, not a gate: with one 2D map per
             # floor the floor's own explorer will map the corridor anyway.  A
             # route that cannot be planned must not hold the whole mission here
             # (run52 floor 2: 654 failed A* attempts and a 0.45 m/s crawl), so
@@ -2058,110 +2457,101 @@ class ElevatorTransition:
                     int(self.route_retry_count),
                     float(self.front_clearance),
                 )
-                self.floor1_gate = tuple(
-                    self.floor0_gate_source or source_gate or gate
-                )
-                self.floor1_topology_isolated = True
-                self.transition_complete = True
-                self._stop()
-                self._set_state("FLOOR_1_READY")
-                # The floor's explorer restores the plane gait for exploration
-                # (it runs the same entrance transit as floor 0), so the next
-                # ride must re-assert the stair gait for the 6 cm threshold
-                # rather than trusting this one-shot flag.
-                self.gait_policy_selected = False
-                self.complete_pub.publish(Bool(data=True))
-                self.floor1_context_published = True
-                self.floor1_complete = False
-                self._publish_floor_context("floor_ready_timeout")
-                self.establish_started_wall = None
-                self._publish_status()
+                self._finish_floor_topology("floor_ready_timeout", source_gate, gate)
                 return
-            # Floors share x/y topology.  The elevator already exits into the
-            # lobby, so route directly to the floor-0 gate's corresponding
-            # corridor-side point instead of replaying the outdoor approach.
-            if source_pose is not None and source_gate is not None:
-                corridor_target = point_from_gate(
-                    source_gate, self.floor1_corridor_advance
-                )
-                self.floor1_corridor_target = tuple(corridor_target)
-                reached = self._drive_planned_to(
-                    source_pose, corridor_target,
+            corridor_gate = self._corridor_gate()
+            if source_pose is None or corridor_gate is None:
+                self._stop()
+                return
+            phase = self.establish_phase or "CLEAR_CAR"
+            if phase == "CLEAR_CAR":
+                # The standalone driver's TO_CORRIDOR sub-leg 0, and the piece
+                # the first fusion missed (run167 froze here for 75+ sim s):
+                # after a REVERSE exit the robot faces INTO the car with the
+                # staging waypoint directly BEHIND it, and pivoting 180 deg at
+                # the car mouth wedges it between the stair core and the shaft
+                # (the driver documents exactly this as "probe 02").  So BACK
+                # STRAIGHT out along the door normal to the staging stand-off
+                # first, and turn only once there is room.
+                #
+                # ``_drive_planned_to(staging)`` looked equivalent but is not:
+                # within direct_entry_max_distance it calls ``_drive_direct``,
+                # which TURNS IN PLACE before driving -- run167 sat at 1.28 m
+                # from the door plane publishing cmd_wz=-0.45 with a frozen yaw.
+                portal = self._approach_portal()
+                target_along = -self.staging_distance
+                if self.source_pose is not None and portal is not None:
+                    # Latch the reverse distance ONCE (see the field comment):
+                    # recomputing it per cycle against a pinned travel anchor
+                    # stopped run168 after ~half the required reverse.
+                    if self.establish_clear_distance is None:
+                        along, _lateral = door_frame_offset(self.source_pose, portal)
+                        self.establish_clear_distance = max(
+                            0.0, float(along) - target_along
+                        )
+                    if self.establish_clear_distance > self.target_tolerance:
+                        distance = float(self.establish_clear_distance)
+                        if not self._drive_distance(
+                            source_pose,
+                            distance,
+                            min(self.motion_speed, self.lobby_approach_speed),
+                            max(0.0, distance - 0.15),
+                            reverse=True,
+                        ):
+                            return
+                    self.establish_clear_distance = None
+                    self.establish_phase = "TO_CORRIDOR_START"
+                    phase = "TO_CORRIDOR_START"
+                else:
+                    staging = self._elevator_staging_source()
+                    if staging is not None and not self._drive_planned_to(
+                        source_pose,
+                        staging,
+                        min(self.motion_speed, self.lobby_approach_speed),
+                        arrival_tolerance=self.elevator_approach_tolerance,
+                    ):
+                        return
+                    self.establish_phase = "TO_CORRIDOR_START"
+                    phase = "TO_CORRIDOR_START"
+            if phase == "TO_CORRIDOR_START":
+                if not self._drive_planned_to(
+                    source_pose,
+                    corridor_gate[:2],
                     min(self.motion_speed, self.lobby_approach_speed),
-                )
-            else:
-                corridor_target = point_from_gate(
-                    gate, self.floor1_corridor_advance
-                )
-                self.floor1_corridor_target = tuple(corridor_target)
-                self._stop()
-                reached = False
-            if reached:
-                self.establish_started_wall = None
-                self.floor1_gate = tuple(
-                    self.floor0_gate_source or source_gate or gate
-                )
-                self.floor1_topology_isolated = True
-                self.transition_complete = True
-                self._stop()
-                self._set_state("FLOOR_1_READY")
-                # See the timeout branch: the next ride re-asserts stair gait.
-                self.gait_policy_selected = False
-                self.complete_pub.publish(Bool(data=True))
-                self.floor1_context_published = True
-                self.floor1_complete = False
-                self._publish_floor_context("floor_ready")
+                    arrival_tolerance=self.corridor_start_tolerance,
+                ):
+                    return
+                self.establish_phase = "CORRIDOR_CENTRE"
+                phase = "CORRIDOR_CENTRE"
+            if phase == "CORRIDOR_CENTRE":
+                if not self._center_on_corridor_axis(
+                    source_pose, corridor_gate, "establish_center_distance"
+                ):
+                    return
+            self.establish_phase = None
+            self.floor1_corridor_target = tuple(corridor_gate[:2])
+            self._finish_floor_topology("floor_ready", source_gate, gate)
         elif state == "FLOOR_1_READY":
             if self.floor1_complete:
                 self._stop()
                 self._set_state("RETURN_TO_FLOOR_1_GATE")
         elif state == "RETURN_TO_FLOOR_1_GATE":
-            if source_pose is not None:
-                reached = self._drive_planned_to(source_pose, self.floor1_gate[:2])
-            else:
+            # Fused 2026-09-15: an upper-floor return uses the SAME
+            # "corridor start -> lift" method as the ground floor (the
+            # standalone cycle's corridor-mouth -> centre -> U-turn -> staging
+            # sequence), instead of the old gate -> lobby-search -> sensor sweep
+            # chain.  The supervisor still keys on this state name to stop the
+            # floor explorer, so the contract is unchanged.
+            gate = self._corridor_gate()
+            if source_pose is None or gate is None:
                 self._stop()
-                reached = False
-            if reached:
-                self._set_state("ENTER_FLOOR_1_LOBBY")
-        elif state == "ENTER_FLOOR_1_LOBBY":
-            target = point_from_gate(self.floor1_gate, self.lobby_search_offset)
-            if source_pose is not None:
-                reached = self._drive_planned_to(
-                    source_pose, target,
-                    min(self.motion_speed, self.lobby_approach_speed),
-                )
-            else:
-                self._stop()
-                reached = False
-            if reached:
-                self.search_index = 0
-                self.search_samples = []
-                self._set_state("SEARCH_FLOOR_1_ELEVATOR")
-        elif state == "SEARCH_FLOOR_1_ELEVATOR":
-            # The map, the gate and the odometry are all in the source frame,
-            # so the scan search runs there instead of crossing into the metric
-            # world frame.
-            base_heading = normalize_angle(source_gate[2] - math.pi / 2.0)
-            sample_heading = normalize_angle(base_heading + self.search_offsets[self.search_index])
-            if self._align(source_pose, sample_heading):
-                # Opening selection must not use the conservative collision
-                # percentile: sparse side returns otherwise close a genuine
-                # doorway even when most rays see free space.
-                self.search_samples.append((sample_heading, self.front_opening_clearance))
-                self.search_index += 1
-                if self.search_index >= len(self.search_offsets):
-                    selected = choose_opening_heading(
-                        self.search_samples,
-                        self.minimum_opening_clearance,
-                        preferred_heading=base_heading,
-                    )
-                    if selected is None:
-                        self._fail("NO_SENSOR_CONFIRMED_FLOOR_1_ELEVATOR_OPENING")
-                    else:
-                        self.elevator_heading = selected
-                        self._set_state("ALIGN_FLOOR_1_ELEVATOR_RETURN")
+                return
+            if self._control_return_to_lift(source_pose, gate):
+                self._set_state("ALIGN_FLOOR_1_ELEVATOR_RETURN")
         elif state == "ALIGN_FLOOR_1_ELEVATOR_RETURN":
-            if self._align(source_pose, self.elevator_heading):
+            # Same fused ALIGN_DOOR gate as the ground floor: centre line plus
+            # doorway normal before the committed entry run.
+            if self._control_align_door(source_pose):
                 self.travel_anchor = source_pose[:2]
                 self.progress_pose = source_pose[:2]
                 self.progress_stamp = rospy.Time.now()
@@ -2221,7 +2611,13 @@ class ElevatorTransition:
                 ):
                     self._fail("ELEVATOR_REJECTED: {}".format(self.ride_response.message))
                 else:
-                    self.elevator_heading = normalize_angle(self.elevator_heading + math.pi)
+                    # 2026-09-15: no pi flip here any more.  The robot boards
+                    # facing INTO the car (``elevator_heading`` is the doorway
+                    # normal), and the fused reverse exit backs straight out
+                    # along that heading -- exactly the standalone lift test's
+                    # cycle, which reverses out of the car on every leg.  The old
+                    # flip made ``_drive_distance(reverse=True)`` run the robot
+                    # back INTO the car.
                     self.current_floor = int(self.ride_response.current_floor)
                     # A new floor has its own car door id; re-request it.
                     self.elevator_door_requested_for = None
@@ -2286,25 +2682,24 @@ class ElevatorTransition:
                     )
             self._set_state("RETURN_TO_SPAWN")
         elif state == "RETURN_TO_SPAWN":
-            # The navigation frame origin is the spawn pose, so the final goal
-            # needs no layout information beyond the public start position.
-            spawn = (0.0, 0.0)
-            if source_pose is not None:
-                reached = self._drive_planned_to(
+            # Fused from the standalone lift test (2026-09-15): the final leg
+            # leaves the lift, opens the main entrance (done in
+            # OPEN_MAIN_ENTRANCE) and drives out to the spawn in three phases
+            # (axis line-up indoors, in-lobby turn to the spawn heading,
+            # reverse out through the entrance and down the 8 cm apron).  The
+            # standalone cycle ran this 10/10 with truth and it is the only exit
+            # method that held the drift far enough to arrive.
+            if self.spawn_world is None:
+                # No world pose was ever latched: fall back to the source-frame
+                # origin, which the localisation bridge anchors at the spawn.
+                if source_pose is not None and self._drive_planned_to(
                     source_pose,
-                    spawn,
+                    (0.0, 0.0),
                     arrival_tolerance=self.return_to_spawn_tolerance,
-                )
-            else:
-                self._stop()
-                reached = False
-            if reached:
-                self._stop()
-                self.returned_to_spawn = True
-                self.two_floor_mission_complete = True
-                self._set_state("RETURNED_TO_SPAWN")
-                self.mission_complete_pub.publish(Bool(data=True))
-                rospy.loginfo("Mission complete: returned to spawn")
+                ):
+                    self._finish_spawn_return()
+                return
+            self._control_spawn_return(source_pose)
 
         self._publish_status()
 
