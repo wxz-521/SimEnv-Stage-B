@@ -1,0 +1,103 @@
+[INFO] [1788649511.504706, 39.180000]: Entrance threshold crossed; stopping before plane-policy switch
+[INFO] [1788649522.656591, 40.000000]: Plane locomotion policy active; continuing exploration
+[INFO] [1788649522.693808, 40.036000]: Lobby transit complete; direct task-region exploration enabled
+[INFO] [1788649565.467513, 42.960000]: FRONT door not observed; starting bounded 1.00 m recognition segment (travel 0.00/3.00 m)
+[INFO] [1788649602.793706, 45.530000]: FRONT door recognition segment complete; stopped for rescan (travel 1.01/3.00 m)
+[INFO] [1788649638.188313, 47.980000]: FRONT door not observed; starting bounded 1.00 m recognition segment (travel 1.01/3.00 m)
+[INFO] [1788649672.892965, 50.730000]: FRONT door recognition segment complete; stopped for rescan (travel 2.04/3.00 m)
+[INFO] [1788649700.833811, 53.004000]: FRONT door not observed; starting bounded 0.96 m recognition segment (travel 2.04/3.00 m)
+[INFO] [1788649742.033071, 55.882000]: FRONT door recognition segment complete; stopped for rescan (travel 3.00/3.00 m)
+[31mWARNING: disk usage in log directory [/tmp/simenv-home/.ros/log] is over 1GB.
+It's recommended that you use the 'rosclean' command.[0m
+... logging to /tmp/simenv-home/.ros/log/e93f1378-a97c-11f1-9f7c-5084929e6cf9/roslaunch-xiejiaxue-System-Product-Name-3897528.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/simnav/launch/stage_b_behavior.launch
+[1mstarted roslaunch server http://xiejiaxue-System-Product-Name:38021/[0m
+
+SUMMARY
+========
+
+PARAMETERS
+ * /coverage_explorer/camera_coverage_target: 0.85
+ * /coverage_explorer/camera_resolution: 0.25
+ * /coverage_explorer/camera_weight: 0.9
+ * /coverage_explorer/clearance_cost_weight: 1.4
+ * /coverage_explorer/combined_coverage_target: 0.84
+ * /coverage_explorer/completion_stable_duration: 3.0
+ * /coverage_explorer/corridor_yaw: 0.0
+ * /coverage_explorer/door_search_front_limit: 3.0
+ * /coverage_explorer/door_search_rear_limit: 3.0
+ * /coverage_explorer/door_search_step_distance: 1.0
+ * /coverage_explorer/door_search_wait_cycles: 3
+ * /coverage_explorer/expected_rooms_per_floor: 4
+ * /coverage_explorer/far_room_first: False
+ * /coverage_explorer/front_station_search_limit: 10.0
+ * /coverage_explorer/frontier_cluster_radius: 0.45
+ * /coverage_explorer/frontier_revisit_radius: 0.7
+ * /coverage_explorer/heading_tolerance: 0.25
+ * /coverage_explorer/information_radius: 2.5
+ * /coverage_explorer/initial_centering_start_distance: 10.5
+ * /coverage_explorer/initial_forward_distance: 14.5
+ * /coverage_explorer/initial_forward_speed: 0.45
+ * /coverage_explorer/laser_coverage_target: 0.95
+ * /coverage_explorer/minimum_room_stations: 1
+ * /coverage_explorer/motion_speed: 0.45
+ * /coverage_explorer/motion_stop_distance: 0.48
+ * /coverage_explorer/navigation_clearance: 0.2
+ * /coverage_explorer/portal_confirm_cycles: 3
+ * /coverage_explorer/preferred_clearance: 0.32
+ * /coverage_explorer/rear_transit_distance: 12.0
+ * /coverage_explorer/replan_period: 1.0
+ * /coverage_explorer/robot_radius: 0.38
+ * /coverage_explorer/room_combined_coverage_target: 0.85
+ * /coverage_explorer/room_completion_miss_cycles: 3
+ * /coverage_explorer/safety_margin: 0.04
+ * /coverage_explorer/show_room_virtual_doors: True
+ * /coverage_explorer/sphere_min_hits: 3
+ * /coverage_explorer/sphere_point_stride: 2
+ * /coverage_explorer/sphere_process_period: 0.5
+ * /coverage_explorer/sphere_review_hold: 2.0
+ * /coverage_explorer/target_replace_gain_ratio: 1.3
+ * /coverage_explorer/target_replace_min_age: 4.0
+ * /coverage_explorer/target_replace_stall: 8.0
+ * /coverage_explorer/target_tolerance: 0.35
+ * /coverage_explorer/task_back_extension: 0.6
+ * /coverage_explorer/task_corridor_half_width: 1.1
+ * /coverage_explorer/task_entry_buffer: 0.45
+ * /coverage_explorer/task_forward_depth: 35.0
+ * /coverage_explorer/task_lateral_half_width: 9.5
+ * /coverage_explorer/turn_cost_weight: 0.1
+ * /coverage_explorer/turn_speed: 0.65
+ * /coverage_explorer/virtual_gate_depth: 0.3
+ * /coverage_explorer/virtual_gate_forward_distance: 10.5
+ * /coverage_explorer/virtual_gate_half_width: 1.1
+ * /danger_detector/camera_observation_markers_enabled: True
+ * /danger_detector/camera_observation_max_cells: 30000
+ * /danger_detector/camera_observation_pixel_stride: 32
+ * /danger_detector/camera_observation_resolution: 0.25
+ * /danger_detector/camera_observation_summary_period: 0.5
+ * /danger_detector/cluster_radius: 0.75
+ * /danger_detector/confirmation_frames: 3
+ * /danger_detector/debug_output_file: /workspace/SimEnv...
+ * /danger_detector/output_file: /workspace/SimEnv...
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+
+NODES
+  /
+    coverage_explorer (simnav/coverage_explorer_node.py)
+    danger_detector (simnav/danger_detector_node.py)
+
+[1mROS_MASTER_URI=http://127.0.0.1:11320[0m
+]2;/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/simnav/launch/stage_b_behavior.launch http://127.0.0.1:11320
+[1mprocess[coverage_explorer-1]: started with pid [3897571][0m
+[1mprocess[danger_detector-2]: started with pid [3897572][0m
+[1m[coverage_explorer-1] process has finished cleanly
+log file: /tmp/simenv-home/.ros/log/e93f1378-a97c-11f1-9f7c-5084929e6cf9/coverage_explorer-1*.log[0m
+[1m[danger_detector-2] process has finished cleanly
+log file: /tmp/simenv-home/.ros/log/e93f1378-a97c-11f1-9f7c-5084929e6cf9/danger_detector-2*.log[0m
+all processes on machine have died, roslaunch will exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

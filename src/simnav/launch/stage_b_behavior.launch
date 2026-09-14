@@ -1,11 +1,12 @@
 <launch>
+  <arg name="room_combined_coverage_target" default="0.84"/>
   <arg name="corridor_yaw" default="0.0"/>
   <arg name="initial_forward_distance" default="14.5"/>
   <arg name="result_dir" default="/workspace/SimEnv/results"/>
   <node pkg="simnav" type="coverage_explorer_node.py" name="coverage_explorer" output="screen">
     <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
     <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
-    <param name="initial_forward_speed" value="0.90"/>
+    <param name="initial_forward_speed" value="0.60"/>
     <param name="initial_centering_start_distance" value="10.5"/>
     <param name="elevator_detection_start_distance" value="4.0"/>
     <param name="elevator_detection_end_distance" value="10.5"/>
@@ -50,26 +51,12 @@
     <param name="frontier_revisit_radius" value="0.70"/>
     <param name="information_radius" value="2.5"/>
     <param name="replan_period" value="1.0"/>
+    <!-- Mid-route target handover (⑥) dwell; 8 s triggered too easily. -->
+    <param name="target_switch_dwell" value="15.0"/>
     <!-- Room-topology hysteresis: permit useful replans without target churn. -->
-    <param name="target_replace_min_age" value="4.0"/>
-    <param name="target_replace_gain_ratio" value="1.30"/>
-    <param name="target_replace_stall" value="8.0"/>
     <param name="room_completion_miss_cycles" value="3"/>
     <param name="room_frontier_wait_cycles" value="0"/>
     <param name="portal_confirm_cycles" value="1"/>
-    <!-- When no portal is visible, advance exactly one metre, stop, and
-         rebuild portal evidence.  The three-metre phase cap ends just before
-         the front doorway station and cannot leak into rear-room transit. -->
-    <param name="door_search_enabled" value="false"/>
-    <param name="door_search_step_distance" value="1.0"/>
-    <param name="door_search_wait_cycles" value="3"/>
-    <param name="door_search_front_limit" value="3.0"/>
-    <param name="door_search_rear_limit" value="3.0"/>
-    <!-- Preserve the one-metre stop-and-rescan strategy.  While advancing,
-         add only a bounded countersteer away from the current cross-track
-         offset; total heading correction remains capped at 0.12 rad. -->
-    <param name="door_search_lateral_gain" value="0.18"/>
-    <param name="door_search_max_lateral_correction" value="0.08"/>
     <!-- A temporally stable single doorway may be entered independently.
          Opposing doors are used only to finish both rooms at one station. -->
     <param name="minimum_room_stations" value="1"/>
@@ -77,11 +64,10 @@
          after both front rooms complete does a 12 m corridor-only transit
          open the rear-door search window. -->
     <param name="front_station_search_limit" value="10.0"/>
-    <param name="rear_transit_distance" value="12.0"/>
     <!-- Each room uses 10% lidar + 90% RGB-D combined coverage.  A floor is
          complete only after four rooms satisfy this threshold and the robot
          has returned to the corridor from each one. -->
-    <param name="room_combined_coverage_target" value="0.84"/>
+    <param name="room_combined_coverage_target" value="$(arg room_combined_coverage_target)"/>
     <param name="expected_rooms_per_floor" value="4"/>
     <!-- Complete the two rooms at the nearest confirmed opposing door station
          before the rear station is allowed to own a target. -->
@@ -92,13 +78,12 @@
     <!-- Faster room exploration; doorway crossing remains capped in
          coverage_explorer_node.py. -->
     <param name="motion_speed" value="0.60"/>
-    <param name="transit_speed" value="0.90"/>
     <param name="turn_speed" value="0.65"/>
 
     <!-- Completion is an AND gate; lidar cannot hide missing RGB-D view. -->
     <param name="laser_coverage_target" value="0.95"/>
-    <param name="camera_coverage_target" value="0.85"/>
-    <param name="combined_coverage_target" value="0.84"/>
+    <param name="camera_coverage_target" value="$(arg room_combined_coverage_target)"/>
+    <param name="combined_coverage_target" value="$(arg room_combined_coverage_target)"/>
     <!-- RGB-D is the task sensor; lidar remains the navigation/frontier
          assistant.  Keep the harmonic gate so lidar cannot hide a camera
          blind spot, while giving camera information gain 80% of the target

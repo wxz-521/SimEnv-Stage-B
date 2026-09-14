@@ -1,0 +1,152 @@
+{
+  "camera_coverage": 0.11335119131538136,
+  "combined_coverage": 0.12759259632232986,
+  "completed_room_count": 1,
+  "completed_rooms_ok": false,
+  "danger_count": 1,
+  "danger_evaluation": {
+    "correct": 1,
+    "detected_count": 1,
+    "false_alarm_rate": 0.0,
+    "false_alarms": 0,
+    "floor_index": 0,
+    "missed": 2,
+    "passed": false,
+    "recall": 0.3333,
+    "threshold": 1.0,
+    "truth_count": 3
+  },
+  "elapsed_sim_time": 158.242,
+  "expected_rooms_per_floor": 4,
+  "floor_complete": false,
+  "laser_coverage": 0.2557652413848664,
+  "latest_status": {
+    "actionable_portals": [],
+    "active_target": null,
+    "active_target_kind": null,
+    "active_target_topology": null,
+    "camera_coverage": 0.11335119131538136,
+    "camera_coverage_target": 0.85,
+    "camera_exploration_active": false,
+    "camera_weight": 0.9,
+    "candidate_topologies": [],
+    "cmd_vel": {
+      "angular_z": 0.0,
+      "linear_x": 0.0
+    },
+    "combined_coverage": 0.12759259632232986,
+    "combined_coverage_target": 0.84,
+    "completed_front_sides": [
+      "L"
+    ],
+    "completed_topologies": [
+      "ROOM_L_15"
+    ],
+    "coverage_exclusion_clearance": 0.42,
+    "door_search_active": false,
+    "door_search_limit": 3.0,
+    "door_search_phase": "FRONT",
+    "door_search_step_distance": 1.0,
+    "door_search_travel": 2.0434543555984916,
+    "expected_rooms_per_floor": 4,
+    "front_rooms_complete": false,
+    "front_station_along": 7.300000108778477,
+    "front_station_topologies": [
+      "ROOM_L_15"
+    ],
+    "initial_forward_active": false,
+    "initial_forward_distance": 14.5,
+    "initial_forward_progress": 17.875170076468603,
+    "laser_coverage": 0.2557652413848664,
+    "laser_coverage_target": 0.95,
+    "last_plan_error": null,
+    "last_plan_reason": "NO_FRONTIER",
+    "navigation_blocks": 0,
+    "navigation_hard_clearance": 0.2,
+    "navigation_preferred_clearance": 0.32,
+    "navigation_reachable_cells": 20023,
+    "observed_portals": [
+      {
+        "actionable": false,
+        "along": 7.550000112503767,
+        "confirmed": true,
+        "evidence": 11,
+        "side": "L",
+        "topology_id": "ROOM_L_15",
+        "width": 0.7000000104308128
+      }
+    ],
+    "plan_cycles": 101,
+    "plan_failures": 0,
+    "plane_policy_active": true,
+    "planner_diagnostics": {
+      "assignment_portal_count": 0,
+      "candidate_reject_counts": {
+        "path_unreachable": 0,
+        "unconfirmed_topology": 0,
+        "visited_or_too_near": 0,
+        "wrong_topology": 0
+      },
+      "last_reject_reason": "NO_ASSIGNMENT_PORTAL",
+      "room_camera_unseen_cells": 0,
+      "room_eligible_cells": 0,
+      "room_reachable_camera_unseen_cells": 0,
+      "room_reachable_cells": 0,
+      "room_task_cells": 0
+    },
+    "portal_confirm_cycles": 3,
+    "portal_evidence": {
+      "ROOM_L_15": 11
+    },
+    "rear_rooms_unlocked": false,
+    "rear_transit_active": false,
+    "rear_transit_distance": 12.0,
+    "rear_transit_progress": 0.0,
+    "returning_topology": null,
+    "room_camera_coverage_target": 0.85,
+    "room_combined_coverage_target": 0.85,
+    "room_coverages": {},
+    "room_laser_coverage_target": 0.95,
+    "show_room_virtual_doors": true,
+    "sphere_hypotheses": 0,
+    "state": "COVERAGE_EXPLORATION",
+    "target_replacements": 5,
+    "targets_reached": 2,
+    "task_entry_buffer": 0.45,
+    "task_extent_confident": false,
+    "task_forward_limit": 35.0,
+    "topology_lock": null,
+    "topology_region": "FRONT_DOOR_CONFIRM",
+    "topology_states": {
+      "ROOM_L_15": {
+        "state": "COMPLETE",
+        "targets": 0
+      }
+    },
+    "unreviewed_sphere_hypotheses": [],
+    "virtual_gate_depth": 0.3,
+    "virtual_gate_half_width": 1.1,
+    "virtual_gate_width": 2.2,
+    "virtual_isolation_door": [
+      -0.08360556232680535,
+      7.304061477547386,
+      1.5708000000000002
+    ]
+  },
+  "localization_state_sequence": [],
+  "max_pose_step": 0.0738,
+  "mean_real_time_factor": 0.1601,
+  "mission_fault": null,
+  "mode": "joint_coverage",
+  "passed": false,
+  "seed": "20260902",
+  "sphere_hypotheses": 0,
+  "state_sequence": [
+    "INITIAL_FORWARD",
+    "COVERAGE_EXPLORATION"
+  ],
+  "targets_reached": 2,
+  "task_extent_confident": false,
+  "task_forward_limit": 35.0,
+  "unreviewed_sphere_hypotheses": []
+}

@@ -1,0 +1,35 @@
+Starting a scoped SimEnv process group; no global ROS/Gazebo cleanup is performed.
+Sourcing ROS environment...
+Generating competition scene...
+==========================================
+Competition scene is ready
+  Workspace: /workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3
+  World:   /workspace/SimEnv/.baseline_runs/single_floor_808e8b3_attempt_3/runtime/generated_building/competition_scene.world
+  Truth:   /workspace/SimEnv/.baseline_runs/single_floor_808e8b3_attempt_3/runtime/results/danger_truth.json
+  Manifest:/workspace/SimEnv/.baseline_runs/single_floor_808e8b3_attempt_3/runtime/generated_building/scene_manifest.json
+  Result:  /workspace/SimEnv/.baseline_runs/single_floor_808e8b3_attempt_3/runtime/results/detected_danger.json
+  Robot pose: x=0.0 y=-3.2 z=0.6 yaw=1.5708
+  Sensor data default: true
+  Livox lidar: true
+  Livox IMU: true
+  RealSense depth camera: true
+  Front RGB camera: false
+  PointCloud2 converter: true
+  Ground truth topics: false
+  Referee odom: false
+  Foot contact sensors: false
+  Foot force visual: false
+  Gazebo starts paused: true
+  Auto unpause: true after 6s
+  Unitree wait warnings: false
+  Robot spawn timeout: 120s
+  Controller spawner timeout: 120s
+  Gazebo physics: max_step=0.002 update_rate=500 ode_iters=40
+  Gazebo plugin path: /workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/.simenv_build/devel/lib:
+==========================================
+Launching Gazebo, Unitree A1 model, sensors, and ROS interfaces...
+Starting building door/elevator control service...
+Starting junior_ctrl controller in the background. Keyboard state switching may not be available.
+UNITREE_CTRL_DT=0.002 seconds.
+Simulation startup command completed.
+Controller mode remains governed by unitree_guide keyboard/joy input. Mode 4 uses RL with keyboard axes; mode 6 keeps the original RL /cmd_vel logic.

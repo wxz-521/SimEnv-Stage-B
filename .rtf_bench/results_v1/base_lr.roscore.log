@@ -1,0 +1,31 @@
+[31mWARNING: disk usage in log directory [/tmp/simenv-home/.ros/log] is over 1GB.
+It's recommended that you use the 'rosclean' command.[0m
+... logging to /tmp/simenv-home/.ros/log/90437b0e-af8c-11f1-a678-5084929e6cf9/roslaunch-xiejiaxue-System-Product-Name-2345066.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;roscore
+[1mstarted roslaunch server http://127.0.0.1:43113/[0m
+ros_comm version 1.17.4
+
+
+SUMMARY
+========
+
+PARAMETERS
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+
+NODES
+
+auto-starting new master
+[1mprocess[master]: started with pid [2345140][0m
+[1mROS_MASTER_URI=http://127.0.0.1:11360/[0m
+]2;roscore http://127.0.0.1:11360/
+[1msetting /run_id to 90437b0e-af8c-11f1-a678-5084929e6cf9[0m
+[1mprocess[rosout-1]: started with pid [2345163][0m
+started core service [/rosout]
+[rosout-1] killing on exit
+[master] killing on exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

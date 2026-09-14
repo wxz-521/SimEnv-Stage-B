@@ -231,6 +231,33 @@ class TaskExtent:
     room_end_wall: Optional[float] = None
 
 
+def interior_targets_only(inside_room, retries, retry_limit):
+    """Whether only in-room targets may be dispatched right now.
+
+    Policy (user-specified): after entering a room the robot may re-orient and
+    manoeuvre freely, but the target must not be moved back out into the
+    corridor until the interior has genuinely been retried and failed several
+    times.  That keeps the entry meaningful (no enter-then-immediately-leave
+    shuttle) while preserving a bounded escape from the "no interior candidate"
+    deadlock.
+    """
+    if not inside_room:
+        return False
+    return int(retries) < max(1, int(retry_limit))
+
+
+def clamp_linear_speed(value, maximum):
+    """Clamp a commanded linear speed into [-maximum, +maximum].
+
+    One auditable enforcement point: the mission is required to stay at or below
+    0.60 m/s everywhere (transit, elevator approach, door crossings), because a
+    faster command tipped the robot over during startup (run70) and makes the
+    whole run unusable.
+    """
+    limit = max(0.0, float(maximum))
+    return max(-limit, min(limit, float(value)))
+
+
 def normalize_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
@@ -314,13 +341,173 @@ def portal_return_along_offsets(portal_width: float) -> Tuple[float, ...]:
     return tuple(result)
 
 
-def corrected_portal_heading(
-    corridor_yaw: float, side: str, along_error: float
-) -> float:
-    """Face across a door with a small correction towards its centre."""
-    sign = 1.0 if side == "L" else -1.0
-    correction = max(-0.10, min(0.10, 0.35 * float(along_error)))
-    return normalize_angle(corridor_yaw + sign * math.pi / 2.0 - sign * correction)
+def zone_split_along(portals, fallback_along):
+    """Midpoint of the corridor in the gate's ``along`` coordinate.
+
+    Rooms are explored a corridor half at a time: the near half and its two
+    rooms form one zone, the far half and its rooms the next.  Splitting the
+    corridor means a locked room is never the only place to go - the rest of the
+    zone (its half-corridor and the opposite room) stays available, which is what
+    stops "entered the room, no frontier candidate left, stood still".
+    """
+    values = sorted(
+        float(portal.along)
+        for portal in (portals or ())
+        if getattr(portal, "along", None) is not None and float(portal.along) > 0.0
+    )
+    if len(values) >= 2:
+        return 0.5 * (values[0] + values[-1])
+    return 0.5 * max(0.0, float(fallback_along or 0.0))
+
+
+def zone_of_along(along, split, band=1.5):
+    """Corridor half a doorway belongs to, with a band around the split.
+
+    A doorway inside the band stays in the near zone so an opposing pair that
+    straddles the midpoint is not torn between two zones.
+    """
+    return "A" if float(along) <= float(split) + float(band) else "B"
+
+
+# A doorway narrow enough to be a wall seam rather than a door may not take part
+# in the near/far zone decision.  Measured on this building: the real doorways
+# are 0.90-1.00 m wide, while the corridor-mouth seams come back at 0.30 m
+# (ROOM_L_0) and 0.40 m (ROOM_R_0) with evidence 40.  Those seams can never be
+# "completed", so counting them held ``active_zone`` at "A" for ever and
+# ``zone_admits`` then rejected every candidate past the split: run151's raw
+# candidate pool collapsed to the already-retired ROOM_L_15, the plan reason
+# became NO_FRONTIER and the robot stood still for 40+ s while unexplored far-zone
+# rooms were actionable (the same class of failure the core already documents for
+# the drifted bin ROOM_L_36 on the transit path).
+MINIMUM_ZONE_PORTAL_WIDTH = 0.70
+
+
+def active_zone(portals, completed, split, band=1.5, minimum_width=None):
+    """Near zone until every near-zone doorway is complete, then the far zone.
+
+    Implements "finish the lower half before moving to the upper half" while
+    staying derived from observed doorways rather than a schedule.
+
+    ``minimum_width`` excludes seam-sized "doorways" from this decision (see
+    ``MINIMUM_ZONE_PORTAL_WIDTH``); pass ``0.0`` to count every portal.
+    """
+    if minimum_width is None:
+        minimum_width = MINIMUM_ZONE_PORTAL_WIDTH
+    minimum_width = max(0.0, float(minimum_width))
+    completed = {str(item) for item in (completed or ())}
+    near = 0
+    far = 0
+    for portal in portals or ():
+        if str(getattr(portal, "topology_id", "")) in completed:
+            continue
+        if float(getattr(portal, "width", 0.0) or 0.0) < minimum_width:
+            continue
+        if zone_of_along(float(portal.along), split, band) == "A":
+            near += 1
+        else:
+            far += 1
+    if near:
+        return "A"
+    if far:
+        return "B"
+    return "A"
+
+
+def zone_admits(along, split, active, band=1.5):
+    """Whether a point at ``along`` may be used while ``active`` zone runs."""
+    return zone_of_along(along, split, band) == str(active)
+
+
+CORRIDOR_TRANSIT_REACHES = (2.0, 4.0, 6.0, 9.0, 14.0, 20.0, 26.0, 32.0)
+# The committed corridor leg lands this far SHORT of the doorway it aims at.
+# User-tuned: "reduce by 2 m" was too short, so it now stops 1 m short - the
+# doorway approach and room entry own the last metre.
+COMMITTED_LANDING_SHORTEN = 1.0
+
+
+def corridor_transit_reaches(forward_only=False, descending=False):
+    """Ordered centreline offsets a corridor transit step may pick.
+
+    P3b: a far-zone transit is a *committed forward leg*, not a choice from the
+    frontier pool.  Ranking the pool re-decided the target on every map update
+    (the pool changes as the map grows), which is what produced the stop-and-go
+    corridor legs.  ``forward_only`` drops the backward half so a transit leg
+    only ever makes progress along the positive corridor axis; ``descending``
+    tries the longest leg first and shortens it until one is navigable.
+    """
+    reaches = list(CORRIDOR_TRANSIT_REACHES)
+    if not forward_only:
+        reaches = [value for step in reaches for value in (step, -step)]
+    if descending:
+        reaches = sorted(reaches, reverse=True)
+    return tuple(reaches)
+
+
+def prefer_room_approach(
+    chosen_topology, failed_room_ids, chosen_gain=None, unobserved_rooms=0,
+    weak_gain=1.0,
+):
+    """Whether a door approach should outrank the chosen corridor target.
+
+    Two reasons to divert to a door:
+
+    * a room candidate could not be routed yet (``failed_room_ids``) - the
+      interior becomes partly known on the way there, which is what makes the
+      crossing plannable at all; and
+    * observation is worth buying even when nothing has failed: if the best
+      remaining action is a nearly worthless corridor target while an
+      unobserved doorway is still pending, the expected value of going to look
+      is higher than the certain-but-tiny gain of the corridor move.  This is
+      the user-specified "trigger it more readily, because apparently worthless
+      tasks can pay off unexpectedly" policy, kept bounded by requiring the
+      corridor alternative to be below ``weak_gain``.
+    """
+    if str(chosen_topology) != "CORRIDOR":
+        return False
+    if failed_room_ids:
+        return True
+    if unobserved_rooms and chosen_gain is not None:
+        return float(chosen_gain) < float(weak_gain)
+    return False
+
+
+def door_approach_is_new(stage, visited, revisit_radius):
+    """Whether a door-approach viewpoint has not already been driven to.
+
+    Keeps the approach fallback from re-dispatching the same viewpoint for ever
+    once the robot has been there: if the room still cannot be routed after
+    standing in front of its door, the honest outcome is NO_FRONTIER rather than
+    an endless shuttle.
+    """
+    for point in visited or ():
+        if math.hypot(
+            float(stage[0]) - float(point[0]), float(stage[1]) - float(point[1])
+        ) < float(revisit_radius):
+            return False
+    return True
+
+
+def door_crossing_along_offsets(
+    portal_width, wide_search=2.5, scan_step=0.5
+) -> Tuple[float, ...]:
+    """Centre-out along-corridor search for a doorway crossing.
+
+    ``portal_return_along_offsets`` only scans inside the measured doorway
+    (+/-0.30 m), which cannot compensate for a portal whose reported ``along``
+    sits off the real opening.  Portal ids are 0.5 m bins that drift as SLAM
+    refines a wall, and run48 floor 0 dead-locked on exactly that: the opposite
+    room was locked as ROOM_L_47 with 4015 reachable camera-unseen cells, but
+    every candidate failed to route and the verified door band held 0 cells at
+    the reported along, so the planner reported NO_FRONTIER and the robot stood
+    still for the rest of the floor.  This bounded fallback runs only after the
+    in-doorway search fails.
+    """
+    offsets = list(portal_return_along_offsets(portal_width))
+    step = max(0.1, float(scan_step))
+    count = int(round(max(0.0, float(wide_search)) / step))
+    for index in range(1, count + 1):
+        offsets.extend((-index * step, index * step))
+    return tuple(offsets)
 
 
 def projected_travel(origin, point, yaw: float) -> float:
@@ -573,6 +760,36 @@ def infer_task_extent(
     )
 
 
+def distinct_room_count(topology_ids, portals, station_tolerance=2.5) -> int:
+    """Number of distinct physical rooms among a set of completed topology ids.
+
+    Doorway ids are 0.5 m bins that drift as SLAM refines a wall, so one physical
+    doorway can appear as several ids: floor 0 of run79 reported nine ids for
+    four rooms.  Counting ids lets four copies of a single door satisfy
+    ``expected_rooms_per_floor``, which would latch the floor with a real room
+    unvisited.  Counting *doors* - same side, ``along`` within
+    ``station_tolerance`` - keeps floor completion honest without introducing a
+    second completion ledger.
+    """
+    by_id = {}
+    for portal in portals or ():
+        by_id[str(getattr(portal, "topology_id", ""))] = portal
+    groups = []
+    for item in topology_ids or ():
+        portal = by_id.get(str(item))
+        if portal is None:
+            groups.append(None)
+            continue
+        for index, reference in enumerate(groups):
+            if reference is not None and doorways_match(
+                portal, reference, station_tolerance
+            ):
+                break
+        else:
+            groups.append(portal)
+    return len(groups)
+
+
 def detect_room_portals(
     grid: GridView,
     gate_center: Tuple[float, float],
@@ -586,6 +803,7 @@ def detect_room_portals(
     minimum_jamb_support: float = 0.0,
     passage_depth: float = 0.70,
 ) -> Tuple[RoomPortal, ...]:
+
     """Find persistent side openings from the occupancy map.
 
     This is intentionally only a *topology hint*.  It uses free cells that
@@ -850,6 +1068,78 @@ def topology_id_for_point(
     return "ROOM_{}_UNASSIGNED".format(side)
 
 
+def region_of_point(
+    point,
+    gate_center,
+    forward_yaw,
+    corridor_half_width,
+    portals,
+    corridor_margin=0.15,
+):
+    """Which topology region a point belongs to: corridor, a room, or unknown.
+
+    The room side reuses the same Voronoi band ``topology_region_mask`` builds
+    (nearest confirmed doorway on that side of the corridor), so point
+    membership and the coverage denominator can never disagree.  Room entry and
+    exit then become a test on the robot's own pose - a state - instead of a
+    plan-progress event that every replan can reset, and no doorway identity,
+    evidence count or wall-offset proxy is needed for the room case.
+    """
+    dx = float(point[0]) - float(gate_center[0])
+    dy = float(point[1]) - float(gate_center[1])
+    cosine = math.cos(float(forward_yaw))
+    sine = math.sin(float(forward_yaw))
+    along = dx * cosine + dy * sine
+    lateral = -dx * sine + dy * cosine
+    if abs(lateral) <= float(corridor_half_width) + max(0.0, float(corridor_margin)):
+        return "CORRIDOR"
+    side = "L" if lateral > 0.0 else "R"
+    best_id = None
+    best_distance = None
+    for portal in portals or ():
+        if str(getattr(portal, "side", "")).upper()[:1] != side:
+            continue
+        distance = abs(along - float(portal.along))
+        if best_distance is None or distance < best_distance:
+            best_id = str(portal.topology_id)
+            best_distance = distance
+    if best_id is None:
+        return "UNKNOWN"
+    return best_id
+
+
+def region_status(combined_coverage, target, active=False) -> str:
+    """Single region state: ``COVERED`` / ``ACTIVE`` / ``UNSEEN``.
+
+    One derived value replaces the four parallel completion bookkeeping sets
+    (completed / retired / state=="COMPLETE" / completed front sides): a region
+    is COVERED once its coverage target is met, ACTIVE while it is the one
+    being worked, and UNSEEN otherwise.
+    """
+    try:
+        value = float(combined_coverage)
+    except (TypeError, ValueError):
+        value = 0.0
+    try:
+        goal = float(target)
+    except (TypeError, ValueError):
+        goal = 1.0
+    if value >= goal:
+        return "COVERED"
+    if active:
+        return "ACTIVE"
+    return "UNSEEN"
+
+
+def floor_regions_complete(statuses, expected_rooms) -> bool:
+    """True when every expected room region of the floor is COVERED."""
+    values = [str(item) for item in (statuses or ())]
+    expected = max(1, int(expected_rooms))
+    if len(values) < expected:
+        return False
+    return all(item == "COVERED" for item in values)
+
+
 def topology_region_mask(
     grid: GridView,
     gate_center: Tuple[float, float],
@@ -1003,6 +1293,321 @@ def coverage_classification(
     return result
 
 
+def doorways_match(candidate, reference, station_tolerance=2.5):
+    """Whether two doorways are the same physical opening.
+
+    Portal ids are 0.5 m longitudinal bins and are re-derived as SLAM refines a
+    wall, so the id is not a stable identity.  Opposite sides stay distinct and
+    real stations are separated by much more than ``station_tolerance``.
+    """
+    return bool(
+        str(getattr(candidate, "topology_id", ""))
+        == str(getattr(reference, "topology_id", ""))
+        or (
+            getattr(candidate, "side", None) == getattr(reference, "side", None)
+            and abs(float(candidate.along) - float(reference.along))
+            <= float(station_tolerance)
+        )
+    )
+
+
+def admit_candidate(
+    candidate,
+    gate_center,
+    forward_yaw,
+    robot_pose,
+    active_topologies=(),
+    corridor_in_active_zone=False,
+    room_status=None,
+):
+    """The single gate every candidate must pass.  Returns ``(admitted, reason)``.
+
+    The three regressions found by hand this session (the robot walked down to
+    the lobby, walked back to a finished front room, and toured the corridor,
+    all with rooms unexplored) were each a *different* filter that a newly
+    admitted candidate pool slipped past.  Rather than adding a fourth filter,
+    every branch funnels through here, and the reason string is counted so the
+    next leak is visible in the diagnostics instead of in RViz.
+
+    Reasons, in check order:
+      LOBBY            behind the entrance gate -- never a task region
+      KIND             not an explorable frontier kind
+      CORRIDOR_CAMERA  a camera viewpoint in the corridor (corridor is transit)
+      BEHIND           behind the robot along the corridor axis
+      ZONE             outside the active near/far zone
+      ROOM_COVERED     belongs to a room already at its target
+    """
+    if candidate is None:
+        return False, "NONE"
+    if str(getattr(candidate, "kind", "")) not in VIEWPOINT_KINDS:
+        return False, "KIND"
+    point = getattr(candidate, "target", None)
+    if point is None:
+        return False, "KIND"
+    cosine, sine = math.cos(float(forward_yaw)), math.sin(float(forward_yaw))
+    along = (float(point[0]) - float(gate_center[0])) * cosine + (
+        float(point[1]) - float(gate_center[1])
+    ) * sine
+    if along < -0.5:
+        return False, "LOBBY"
+    topology = str(getattr(candidate, "topology_id", "CORRIDOR"))
+    if topology == "CORRIDOR" and candidate.kind == "CAMERA_FRONTIER":
+        return False, "CORRIDOR_CAMERA"
+    if robot_pose is not None:
+        ahead = (float(point[0]) - float(robot_pose[0])) * cosine + (
+            float(point[1]) - float(robot_pose[1])
+        ) * sine
+        if ahead < -0.5:
+            return False, "BEHIND"
+    if topology == "CORRIDOR":
+        if not corridor_in_active_zone:
+            return False, "ZONE"
+    elif active_topologies and topology not in {
+        str(item) for item in active_topologies
+    }:
+        return False, "ZONE"
+    if room_status is not None and topology != "CORRIDOR":
+        if str(room_status.get(topology, "")).upper() == "COVERED":
+            return False, "ROOM_COVERED"
+    return True, "ADMITTED"
+
+
+VIEWPOINT_KINDS = ("LASER_FRONTIER", "CAMERA_FRONTIER", "SPHERE_REVIEW")
+
+
+def crossing_zone(zone_now, robot_along, zone_split, margin=0.5):
+    """Whether the robot still has to CROSS into the active (far) zone.
+
+    User rule (2026-09-14): "allow the corridor to select camera frontier points,
+    but only use them when crossing zones".  The corridor is normally transit and
+    a corridor camera viewpoint is rejected outright (see the camera fallback);
+    while the far zone is active and the robot is still in the near half, a
+    corridor camera viewpoint beyond the split is exactly the pull that gets the
+    robot to the far zone - so it is admitted only then.
+    """
+    if str(zone_now) != "B":
+        return False
+    return float(robot_along) < float(zone_split) - float(margin)
+
+
+def leg_speed(
+    cruise,
+    elapsed,
+    remaining,
+    accel_seconds=1.5,
+    decel_distance=1.0,
+    ramp_floor_fraction=0.45,
+    minimum_speed=0.20,
+):
+    """Speed for one path leg: ramp in from a stop, ramp out near the goal.
+
+    User rule (2026-09-14): "do not hold the robot at its maximum speed the whole
+    time - speed up gradually and slow down gradually; when planning/exploring
+    toward a target point there should be a clear deceleration at the start and
+    the end, but not so slow that it wastes efficiency".
+
+    ``ramp_floor_fraction``/``minimum_speed`` keep the ramps from crawling: the
+    speed never drops below ``max(minimum_speed, cruise * fraction)``, so the last
+    metre and the first metre still move properly.  With ``remaining=0`` the leg
+    returns the floor, and the arrival tolerance stops the robot before that.
+
+    Pure so the offline suite can hold the shape; 0 for either ramp disables it
+    (``accel_seconds<=0`` -> cruise immediately, ``decel_distance<=0`` -> no
+    ramp-out), which is the pre-ramp behaviour for that side.
+    """
+    cruise = max(0.0, float(cruise))
+    if cruise <= 0.0:
+        return 0.0
+    floor = min(cruise, max(float(minimum_speed), cruise * float(ramp_floor_fraction)))
+    speed = cruise
+    if accel_seconds > 0.0 and float(elapsed) < float(accel_seconds):
+        fraction = max(0.0, float(elapsed)) / float(accel_seconds)
+        speed = floor + (cruise - floor) * fraction
+    if decel_distance > 0.0 and float(remaining) < float(decel_distance):
+        fraction = max(0.0, float(remaining)) / float(decel_distance)
+        speed = min(speed, floor + (cruise - floor) * fraction)
+    return max(0.0, min(cruise, speed))
+
+
+def room_lock_for_target(topology_id, retired=()):
+    """Topology a dispatched room target must lock, or ``None`` for transit.
+
+    Both ways of adopting a target - the ordinary plan dispatch and the
+    mid-route handover in ``_switch_active_target`` - must arm the room lock
+    identically.  The handover path used to skip it, which left
+    ``locked_topology`` at ``None`` after a handover: ``target_switch_allowed``
+    then had no room constraint at all and the explorer alternated between the
+    two front rooms every ~10 sim seconds while never entering either.  Measured
+    on run107 floor 0: 13 handovers in 196 sim seconds, ``along`` oscillating
+    between 4.1 and 8.9 m and ``lateral`` between +0.4 and -3.7 m.
+
+    Extracted as a pure function so the shared invariant is testable in the
+    ordinary core suite instead of living only in the node.
+    """
+    if topology_id is None:
+        return None
+    topology_id = str(topology_id)
+    if topology_id == "CORRIDOR" or "UNASSIGNED" in topology_id:
+        return None
+    if topology_id in {str(item) for item in (retired or ())}:
+        return None
+    return topology_id
+
+
+def target_switch_allowed(
+    active,
+    candidate,
+    dwell_elapsed,
+    locked_topology=None,
+    dwell_seconds=8.0,
+    observed_ratio=0.25,
+    active_remaining=None,
+):
+    """Whether the target being driven may be replaced mid-route.
+
+    The trigger is the current viewpoint's OWN obsolescence, not a comparison
+    between two candidates (user requirement): while walking, if the target
+    viewpoint has become clearly observed -- its remaining information has
+    collapsed -- the planner may hand over to whatever it now prefers.  A pure
+    score comparison is what made the earlier mechanism oscillate, and the
+    guards below still forbid the obvious instabilities:
+
+    * the current target has been held for ``dwell_seconds``;
+    * the successor is room-owned (the corridor is transit) and belongs to the
+      locked room when a lock is held;
+    * the successor is not the same point.
+
+    ``active_remaining`` is the fraction of the active viewpoint's original
+    information that is still unobserved (``None`` means "cannot tell", which
+    refuses the switch).
+    """
+    if active is None or candidate is None:
+        return False
+    if float(dwell_elapsed) < float(dwell_seconds):
+        return False
+    if candidate.kind not in VIEWPOINT_KINDS or active.kind not in VIEWPOINT_KINDS:
+        return False
+    if str(candidate.topology_id) == "CORRIDOR":
+        return False
+    if locked_topology is not None and str(candidate.topology_id) != str(locked_topology):
+        return False
+    if (
+        abs(float(candidate.target[0]) - float(active.target[0])) < 1e-6
+        and abs(float(candidate.target[1]) - float(active.target[1])) < 1e-6
+    ):
+        return False
+    if active_remaining is None:
+        return False
+    return float(active_remaining) <= float(observed_ratio)
+
+
+def front_stations_complete(
+    front_station_portals,
+    completed,
+    completed_portals,
+    completed_front_sides=(),
+    station_tolerance=2.5,
+):
+    """Whether the first room pair (both front sides) has been explored.
+
+    run46 floor 2 dead-locked here because this test matched ids only: the pair
+    was explored and completed as ROOM_L_10/ROOM_R_10 while the front station
+    identity had drifted to ROOM_L_15/ROOM_R_15.  ``completed_sides`` stayed
+    empty, ``front_rooms_complete`` stayed False, every newly generated frontier
+    was rejected as ``wrong_topology`` (129 rejections) and the planner reported
+    NO_FRONTIER while the robot stood still in the corridor.
+    """
+    front_sides = {
+        str(getattr(portal, "side", "")) for portal in front_station_portals
+    }
+    front_sides.discard("")
+    completed = completed or ()
+    completed_portals = tuple(completed_portals or ())
+    completed_sides = {
+        str(side) for side in (completed_front_sides or ()) if str(side) in ("L", "R")
+    }
+    for portal in front_station_portals:
+        if getattr(portal, "topology_id", None) in completed:
+            completed_sides.add(portal.side)
+        elif any(
+            doorways_match(portal, old, station_tolerance) for old in completed_portals
+        ):
+            completed_sides.add(portal.side)
+    return bool(front_sides == {"L", "R"} and completed_sides == {"L", "R"})
+
+
+def unsafe_path_replan_needed(
+    target_active, active_safe, unsafe_cycles, replan_cycles
+):
+    """Whether a path judged unsafe should be abandoned for another target.
+
+    One unsafe reading must not churn the target.  run47 floor 0 room 4 kept a
+    robot rotating on the spot at a doorway while two targets of the same room
+    alternated every ~5.5 s (combined gains 5.36 and 3.12, neither marked
+    ``(replaced)``): each rotation changed the map, the remaining active path
+    was re-judged unsafe and the planner returned the room's other target, which
+    pointed the opposite way.  Requiring the condition to persist for a few
+    planning cycles preserves the doorway commitment so the controller can
+    drive through; a genuine blockage is still handled by the collision stop.
+    """
+    if not target_active or active_safe:
+        return False
+    return int(unsafe_cycles) >= max(1, int(replan_cycles))
+
+
+def clear_doorway_speckle(
+    data, mask, max_component=2, occupied_value=50, dilation=1
+):
+    """Free isolated occupied blobs that sit *entirely* inside a doorway span.
+
+    The occupancy map never converts an occupied cell back to free (rays only
+    clear *unknown* cells), so a single stray endpoint on the door line seals a
+    real doorway for the rest of the run - measured as verified door bands of 0
+    cells while the opening was physically clear.  Inside a doorway whose span
+    the portal detector has already measured, a one- or two-cell blob cannot be
+    a wall, so it is removed.
+
+    Two details matter and both were learned the hard way:
+
+    * components are labelled in the mask *dilated* by one cell, so a wall that
+      crosses the doorway boundary is still connected to the rest of the wall
+      and is never mistaken for an isolated blob; and
+    * a component is freed only when **every** cell lies inside the mask, so a
+      small blob just outside the doorway is left alone.
+
+    Everything larger, and everything outside the doorway span, is untouched:
+    real walls and real obstacles still block.  Scoping to doorways (instead of
+    despeckling the whole map) preserves the coverage-plan semantics that the
+    run30 regression showed must not change.  Returns the number of cells freed;
+    ``data`` is modified in place.
+    """
+    import numpy as np
+    from scipy.ndimage import binary_dilation, label
+
+    values = np.asarray(data)
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return 0
+    region = binary_dilation(mask, iterations=max(0, int(dilation)))
+    occupied = (values >= int(occupied_value)) & region
+    if not occupied.any():
+        return 0
+    components, count = label(occupied, np.ones((3, 3), dtype=np.int8))
+    if count <= 0:
+        return 0
+    freed = 0
+    for index in range(1, count + 1):
+        cells = components == index
+        size = int(np.count_nonzero(cells))
+        if size > int(max_component):
+            continue
+        if not bool(np.all(mask[cells])):
+            continue
+        values[cells] = 0
+        freed += size
+    return freed
+
+
 class TaskCoveragePlanner:
     """Nearest-safe-frontier planner with camera-biased local information gain."""
 
@@ -1026,6 +1631,8 @@ class TaskCoveragePlanner:
         revisit_radius: float = 0.70,
         information_radius: float = 2.5,
         camera_weight: float = 0.65,
+        gain_camera_weight: Optional[float] = None,
+        target_rank_mode: str = "gain_efficiency",
         back_extension: float = 3.6,
         forward_depth: float = 25.0,
         lateral_half_width: float = 9.5,
@@ -1040,13 +1647,46 @@ class TaskCoveragePlanner:
         virtual_gate_half_width: Optional[float] = None,
         virtual_gate_depth: float = 0.30,
         min_room_interior_cells: int = 800,
+        portal_merge_radius: float = 2.5,
     ):
         self.robot_radius = float(robot_radius)
         self.safety_margin = float(safety_margin)
         self.frontier_cluster_radius = max(0.15, float(frontier_cluster_radius))
+        # Bounded wider along search used only when the in-doorway crossing
+        # search fails (see door_crossing_along_offsets); the offset that
+        # succeeded is reported so the next run can prove the drift.
+        self.door_crossing_wide_search = 2.5
+        # Below this combined gain a corridor move is treated as
+        # nearly worthless, so an observation episode is preferred.
+        self.observation_weak_gain = 1.0
+        # Doorway-scoped speckle removal: freeing a mis-detected obstacle inside
+        # a confirmed doorway is required, because the map never frees an
+        # occupied cell otherwise.
+        self.door_speckle_max_component = 2
+        self.door_mask_margin = 0.35
+        self.door_mask_depth = 1.20
+        self.door_crossing_scan_step = 0.5
+        self.last_door_crossing_offset = None
         self.revisit_radius = max(0.2, float(revisit_radius))
         self.information_radius = max(0.5, float(information_radius))
         self.camera_weight = max(0.0, min(1.0, float(camera_weight)))
+        # Gain and coverage are separate objectives and must not share one
+        # weight.  ``camera_weight`` answers "how much of the floor has been
+        # observed", which is the completion criterion and stays as validated.
+        # Target *selection* is a different question: which viewpoint is worth
+        # the travel.  Raising the laser share there makes the planner prefer
+        # the camera viewpoints that also extend the map and the corridor
+        # geometry, which is what later lets the camera be driven to somewhere
+        # it can actually see a red source.  The selected kind is still
+        # CAMERA_FRONTIER; only its ranking changes.
+        if gain_camera_weight is None:
+            self.gain_camera_weight = self.camera_weight
+        else:
+            self.gain_camera_weight = max(0.0, min(1.0, float(gain_camera_weight)))
+        rank_mode = str(target_rank_mode or "gain_efficiency").strip().lower()
+        self.target_rank_mode = (
+            rank_mode if rank_mode in ("gain_efficiency", "nearest") else "gain_efficiency"
+        )
         self.back_extension = max(0.0, float(back_extension))
         self.forward_depth = max(1.0, float(forward_depth))
         self.lateral_half_width = max(1.0, float(lateral_half_width))
@@ -1058,6 +1698,17 @@ class TaskCoveragePlanner:
         # while a seam leaves a few hundred (run17: real rooms 4251-8712,
         # seams 185-730).  0 disables the guard.
         self.min_room_interior_cells = max(0, int(min_room_interior_cells))
+        # One physical doorway is reported as several 0.5 m longitudinal bins,
+        # and every bin is a separate candidate with its own lock id, owner
+        # label and approach geometry.  That ambiguity is what let the robot
+        # re-approach the same room through a slightly different candidate.
+        # Collapse same-side portals whose along values are within this radius
+        # (the same tolerance the completion test already uses) so a doorway
+        # enters the planner exactly once.  The comparison is along the corridor
+        # axis and per side, NOT plain Cartesian distance: the left and right
+        # doorways of a pair sit only about 2.2 m apart across the corridor and
+        # are genuinely different rooms.  0 disables the merge.
+        self.portal_merge_radius = max(0.0, float(portal_merge_radius))
         # Coverage excludes cells close to walls using robot_radius +
         # safety_margin.  Navigation is intentionally separate: the A1
         # footprint is 0.36 m wide plus 0.02 m padding on either side, so a
@@ -1081,6 +1732,9 @@ class TaskCoveragePlanner:
             min(self.corridor_half_width, float(virtual_gate_half_width)),
         )
         self.virtual_gate_depth = max(0.0, float(virtual_gate_depth))
+        # Diagnostic: how often the A* backwards walk had to be abandoned
+        # because ``predecessor`` had closed a cycle (see ``_astar_cells``).
+        self.predecessor_cycle_breaks = 0
 
     @staticmethod
     def _in_bounds(shape, row, column):
@@ -1094,6 +1748,37 @@ class TaskCoveragePlanner:
         y = grid.origin_y + (rows + 0.5) * grid.resolution
         index = int(np.argmin((x - pose[0]) ** 2 + (y - pose[1]) ** 2))
         return int(rows[index]), int(columns[index])
+
+    def _robot_local_safe(self, grid, safe, pose):
+        """``safe`` plus the 3x3 window the robot physically occupies.
+
+        The robot is standing there, so those cells *are* traversable; the
+        clearance-inflated ``safe`` can still exclude them (its own leg returns,
+        a door frame, or a cell the map has not observed yet).  There is no
+        "nearest safe cell" fallback any more: the route always starts in the
+        robot's own cell, which is what the user requires.  Bounded to one cell
+        around the robot, so this can never open a shortcut through a wall.
+
+        Returns ``(mask, start_cell)``; ``(None, None)`` when the pose is
+        outside the map.
+        """
+        data = np.asarray(grid.data)
+        if pose is None:
+            return None, None
+        cell = grid.world_to_cell(float(pose[0]), float(pose[1]))
+        if not self._in_bounds(data.shape, *cell):
+            return None, None
+        row, column = int(cell[0]), int(cell[1])
+        window = np.asarray(data[row - 1: row + 2, column - 1: column + 2]) < 50
+        # The robot's own cell is trusted unconditionally: it is standing in it.
+        if window.size == 9:
+            window[1, 1] = True
+        local = safe[row - 1: row + 2, column - 1: column + 2]
+        if not np.any(window & ~local):
+            return safe, (row, column)
+        mask = safe.copy()
+        mask[row - 1: row + 2, column - 1: column + 2] |= window
+        return mask, (row, column)
 
     def _reachable(self, safe, seed):
         distance = np.full(safe.shape, -1, dtype=np.int32)
@@ -1113,9 +1798,37 @@ class TaskCoveragePlanner:
                 queue.append((next_row, next_column))
         return distance, predecessor
 
-    def _navigation_fields(self, grid, task_mask=None):
+    def _navigation_fields(self, grid, task_mask=None, despeckle=False):
         data = np.asarray(grid.data)
         occupied = data >= 50
+        # FAST-LIO endpoints are accumulated permanently by the lightweight
+        # occupancy node, so a single-frame return leaves isolated one- and
+        # two-cell occupied speckle behind.  That speckle is harmless on its
+        # own, but inflating it by the navigation clearance closes a passage
+        # the robot can physically drive through, and A* then reports "no
+        # route" for a corridor the robot has already traversed.  Measured on
+        # run29 floor 0: the rear-corridor pocket reachable from the robot's
+        # pose held 28732 cells at the node's 0.30 m clearance with the
+        # elevator staging point (5.75, -0.35) unreachable; removing 349 cells
+        # of <=2-cell speckle (5.7% of the occupied set) reconnected it to
+        # 47458 cells with the staging point reachable again.  Real obstacles
+        # are larger than two cells and are left untouched.  This is the same
+        # technique, with the same justification, that
+        # ``navigation_path_from_room_through_portal`` already applies to the
+        # door-normal crossing.
+        #
+        # It is deliberately opt-in and applied to *routing* only.  Turning it
+        # on for the coverage plan's own reachability set changed the explorer
+        # as well: run30 then held ROOM_L_43 for 297 sim seconds spinning in
+        # place at its doorway (position pinned inside a 0.5 x 1.5 m box,
+        # cmd_vx == 0 in 87% of samples, no "doorway crossing confirmed"),
+        # where run29 with the identical code minus this flag had finished the
+        # same room in 62 s.  Routing must see through the speckle; the
+        # frontier/eligibility semantics that decide what to explore must not.
+        if despeckle and occupied.any():
+            components, _count = label(occupied, np.ones((3, 3), dtype=np.int8))
+            sizes = np.bincount(components.reshape(-1))
+            occupied = occupied & (sizes[components] > 2)
         clearance = distance_transform_edt(~occupied) * grid.resolution
         safe = (
             (data >= 0)
@@ -1125,6 +1838,97 @@ class TaskCoveragePlanner:
         if task_mask is not None and np.asarray(task_mask).shape == safe.shape:
             safe &= np.asarray(task_mask, dtype=bool)
         return safe, clearance
+
+    def verified_door_band(
+        self, grid, gate_center, forward_yaw, portals, clearance,
+        portal_clearance=0.12,
+    ):
+        """Cells of an already-confirmed doorway that are physically crossable.
+
+        ``safe`` requires ``clearance >= navigation_clearance`` (0.24 m), but
+        FAST-LIO endpoints are accumulated permanently, so a single stray
+        occupied pixel on the wall line seals a doorway once it is inflated and
+        cuts its room out of the reachable set.  Measured on run27 floor 0: the
+        front-right room held 11869 task cells of which only 260 stayed
+        reachable, ``room_reachable_camera_unseen_cells`` was 0 while 7654
+        cells were unseen, and the planner could therefore never emit a target
+        that would take the robot through the door.
+
+        This marks only the straight door-normal band at the *cached* door
+        centre of a portal the node has already confirmed, and only when every
+        cell of that band is known-free and its un-inflated clearance still
+        exceeds the same verified-crossing threshold the accepted return path
+        uses (``navigation_path_from_room_through_portal``).  It is not a
+        generic wall-gap fallback: unknown cells, walls and real obstacles all
+        still refuse the band.
+        """
+        data = np.asarray(grid.data)
+        occupied = data >= 50
+        band = np.zeros(data.shape, dtype=bool)
+        for portal in portals:
+            sign = 1.0 if portal.side == "L" else -1.0
+            corridor_stage = self._portal_waypoint(
+                gate_center, forward_yaw, float(portal.along), 0.0
+            )
+            for along_offset in portal_return_along_offsets(portal.width):
+                room_stage = self._portal_waypoint(
+                    gate_center,
+                    forward_yaw,
+                    float(portal.along) + along_offset,
+                    sign * (self.corridor_half_width + 1.2),
+                )
+                length = math.hypot(
+                    room_stage[0] - corridor_stage[0],
+                    room_stage[1] - corridor_stage[1],
+                )
+                count = max(1, int(math.ceil(length / max(grid.resolution, 0.05))))
+                sample_cells = []
+                for index in range(count + 1):
+                    point = (
+                        corridor_stage[0]
+                        + (room_stage[0] - corridor_stage[0]) * index / count,
+                        corridor_stage[1]
+                        + (room_stage[1] - corridor_stage[1]) * index / count,
+                    )
+                    sample_cells.append(grid.world_to_cell(*point))
+                # Walk a 4-connected digital line through the samples.  Marking
+                # only the sample cells leaves single-cell gaps (the run27 test
+                # grid skipped exactly one row at y = 1.25), and a one-cell gap
+                # is enough to break the cardinal flood fill that produces
+                # ``reachable``, which would silently defeat the whole band.
+                cells = []
+                for index, start in enumerate(sample_cells):
+                    cells.append(start)
+                    if index + 1 >= len(sample_cells):
+                        break
+                    current = start
+                    goal = sample_cells[index + 1]
+                    while current != goal:
+                        delta_row = goal[0] - current[0]
+                        delta_column = goal[1] - current[1]
+                        if abs(delta_row) >= abs(delta_column):
+                            current = (
+                                current[0] + (1 if delta_row > 0 else -1),
+                                current[1],
+                            )
+                        else:
+                            current = (
+                                current[0],
+                                current[1] + (1 if delta_column > 0 else -1),
+                            )
+                        cells.append(current)
+                if any(
+                    not self._in_bounds(data.shape, *cell) for cell in cells
+                ):
+                    continue
+                if any(
+                    data[cell] < 0 or occupied[cell] or clearance[cell] < portal_clearance
+                    for cell in cells
+                ):
+                    continue
+                for cell in cells:
+                    band[cell] = True
+        return band
 
     @staticmethod
     def _direction_index(yaw):
@@ -1196,9 +2000,33 @@ class TaskCoveragePlanner:
                 )
         if goal_state is None:
             return ()
+        return self._reconstruct_path(predecessor, initial_state, goal_state)
+
+    def _reconstruct_path(self, predecessor, initial_state, goal_state):
+        """Walk ``predecessor`` back from goal to start, cycle-safe.
+
+        ``predecessor`` is NOT guaranteed to be acyclic, because the search
+        re-opens states (a cheaper route may be found after a state was already
+        expanded) and overwrites their predecessor when it does.  If X was first
+        routed through Y and Y is later routed through X, an unguarded walk never
+        reaches ``initial_state``: it spins for ever at ~100 % CPU and the
+        planning thread never publishes again.  Measured on run146: from sim ~245
+        the planning thread was the only running thread in the node (277 s of CPU
+        against 359 s for the whole process) and the robot sat still at the
+        ROOM_*_49 doorway for the rest of the run while the control loop kept
+        reporting a stale ``plan_target``.  Abandon the walk on the first
+        repeated state: an unroutable answer is recoverable (the candidate is
+        skipped and another target is chosen), a hung planner is not.
+        """
         states = [goal_state]
+        seen_states = {goal_state}
         while states[-1] != initial_state:
-            states.append(predecessor[states[-1]])
+            previous = predecessor.get(states[-1])
+            if previous is None or previous in seen_states:
+                self.predecessor_cycle_breaks += 1
+                return ()
+            seen_states.add(previous)
+            states.append(previous)
         states.reverse()
         return tuple((state[0], state[1]) for state in states)
 
@@ -1260,10 +2088,17 @@ class TaskCoveragePlanner:
         """Plan the executable A* path independently of coverage eligibility."""
         if grid is None or robot_pose is None or target is None:
             return (), 0.0, 0.0
-        safe, clearance = self._navigation_fields(grid, task_mask)
-        start = self._nearest_seed(grid, safe, robot_pose)
+        # Routing sees through single-frame endpoint speckle, which the
+        # coverage plan's own reachability set deliberately does not (see
+        # _navigation_fields).
+        safe, clearance = self._navigation_fields(grid, task_mask, despeckle=True)
+        # No "nearest safe cell": the route starts in the cell the robot is
+        # standing in, plus the 3x3 window it physically occupies.
+        safe, start = self._robot_local_safe(grid, safe, robot_pose)
+        if start is None:
+            return (), 0.0, 0.0
         goal = grid.world_to_cell(float(target[0]), float(target[1]))
-        if start is None or not self._in_bounds(safe.shape, *goal) or not safe[goal]:
+        if not self._in_bounds(safe.shape, *goal) or not safe[goal]:
             return (), 0.0, 0.0
         cells = self._astar_cells(
             grid, safe, clearance, start, goal, float(robot_pose[2])
@@ -1276,7 +2111,17 @@ class TaskCoveragePlanner:
             math.hypot(second[0] - first[0], second[1] - first[1])
             for first, second in zip(path, path[1:])
         )
-        minimum = min(float(clearance[grid.world_to_cell(*point)]) for point in path)
+        # The robot's own cell is an unavoidable part of the route, not a
+        # property of it: reporting its (possibly sub-threshold) clearance as
+        # the route minimum made every target chosen while hugging a wall look
+        # unsafe.  Judge the route from the first cell the robot has to drive
+        # to, matching ``path_is_safe``, which skips the seed via ``path_index``.
+        measured = path
+        if len(path) > 1 and float(
+            clearance[grid.world_to_cell(*path[0])]
+        ) < self.navigation_clearance:
+            measured = path[1:]
+        minimum = min(float(clearance[grid.world_to_cell(*point)]) for point in measured)
         return path, length, minimum
 
     def navigation_path_via(self, grid, robot_pose, waypoints, task_mask=None):
@@ -1389,6 +2234,7 @@ class TaskCoveragePlanner:
         portal,
         target,
         task_mask=None,
+        wide_search=None,
     ):
         """Build a staged door path using the deepest known entry point.
 
@@ -1403,11 +2249,31 @@ class TaskCoveragePlanner:
         # occupancy map.  Do not make the entire confirmed doorway depend on
         # one exact corridor staging cell: shift the complete door-normal
         # crossing together, bounded strictly by the observed doorway width.
-        for along_offset in portal_return_along_offsets(portal.width):
+        # The widened scan is a bounded fallback for a portal bin that drifted
+        # off the real opening.  It is always available because the drift also
+        # hits corridor-owned candidates: run50 floor 0 reported NO_FRONTIER in
+        # the corridor with four actionable portals and one remaining candidate
+        # (ROOM_R_32) that failed as path_unreachable with a 0-cell verified door
+        # band.  The in-doorway offsets are always tried first and the loop
+        # stops at the first success, so a healthy doorway costs nothing extra.
+        search_wide = (
+            self.door_crossing_wide_search
+            if wide_search is None
+            else max(0.0, float(wide_search))
+        )
+        for along_offset in door_crossing_along_offsets(
+            portal.width,
+            search_wide,
+            self.door_crossing_scan_step,
+        ):
             shifted_along = float(portal.along) + along_offset
-            corridor_stage = self._portal_waypoint(
-                gate_center, forward_yaw, shifted_along, 0.0
-            )
+            # No corridor-axis staging waypoint.  Sending the robot to the
+            # corridor centreline before the door meant that every replan -
+            # and the room target is replanned every ``replan_period`` - turned
+            # a robot that was already inside the room back out through the
+            # doorway and in again ("enter, leave, re-enter").  A* straight to
+            # the door centre from wherever the robot stands keeps the crossing
+            # monotone; the door centre itself remains mandatory.
             door_centre = self._portal_waypoint(
                 gate_center, forward_yaw, shifted_along, portal.lateral
             )
@@ -1421,10 +2287,11 @@ class TaskCoveragePlanner:
                 path, length, minimum = self.navigation_path_via(
                     grid,
                     robot_pose,
-                    (corridor_stage, door_centre, room_entry, target),
+                    (door_centre, room_entry, target),
                     task_mask,
                 )
                 if path:
+                    self.last_door_crossing_offset = float(along_offset)
                     return path, length, minimum, depth
         return (), 0.0, 0.0, None
 
@@ -1526,11 +2393,49 @@ class TaskCoveragePlanner:
         cell_area = grid.resolution ** 2
         laser_gain = laser_count * cell_area
         camera_gain = camera_count * cell_area
-        combined = (1.0 - self.camera_weight) * laser_gain + self.camera_weight * camera_gain
+        combined = (
+            (1.0 - self.gain_camera_weight) * laser_gain
+            + self.gain_camera_weight * camera_gain
+        )
         return laser_gain, camera_gain, combined
 
-    def _camera_look_at(self, cell, camera_unseen, grid):
-        """Aim RGB-D toward the local unseen-area centroid at a real viewpoint."""
+    # 16 bearing bins of 22.5 degrees for the camera look-at direction.
+    LOOK_AT_BINS = 16
+
+    def _room_interior_yaw(self, cell, grid, gate_center, forward_yaw):
+        """Bearing from a viewpoint away from the corridor, i.e. into its room.
+
+        Used only to break look-at ties, so it never overrides a genuine
+        asymmetry in the unseen area.
+        """
+        point = grid.cell_center(*cell)
+        normal = (-math.sin(float(forward_yaw)), math.cos(float(forward_yaw)))
+        lateral = (point[0] - float(gate_center[0])) * normal[0] + (
+            point[1] - float(gate_center[1])
+        ) * normal[1]
+        return float(forward_yaw) + (math.pi / 2.0 if lateral >= 0.0 else -math.pi / 2.0)
+
+    def _camera_look_at(self, cell, camera_unseen, grid, preferred_yaw=None):
+        """Aim RGB-D at the bearing that carries the most unseen area.
+
+        The previous version returned the *centroid* of the unseen cells in the
+        annulus.  A centroid is degenerate whenever the unseen region is roughly
+        symmetric about the viewpoint, which is the ordinary case: a room centre,
+        the corridor, or any freshly entered floor whose camera map is still
+        empty.  The centroid then lands on the viewpoint itself, ``atan2(0, 0)``
+        collapses the heading to 0 rad -- a fixed *world* axis -- and the RViz
+        target arrow is drawn sideways.  Measured on run90 floor 1 every one of
+        the 61 door-area viewpoints came out with ``look_at == target`` and
+        yaw 0.0 deg, i.e. exactly the 90 deg-off "sideways at the doorway /
+        facing out of the door" heading.
+
+        Binning the unseen cells by bearing and taking the heaviest bin is the
+        direct "face the direction with the largest information gain" objective,
+        and it cannot collapse while any unseen cell exists.  ``preferred_yaw``
+        breaks ties (all bins equal, i.e. a fully symmetric unseen region) in
+        favour of the caller's room-interior bearing instead of an arbitrary
+        world axis.
+        """
         radius = max(1, int(math.ceil(self.information_radius / grid.resolution)))
         row, column = cell
         row_start, row_stop = max(0, row - radius), min(camera_unseen.shape[0], row + radius + 1)
@@ -1545,11 +2450,38 @@ class TaskCoveragePlanner:
         keep = (squared >= 0.6 ** 2) & (squared <= self.information_radius ** 2)
         if not np.any(keep):
             return None
-        mean_row = float(np.mean(rows[keep]))
-        mean_column = float(np.mean(columns[keep]))
+        rows = rows[keep]
+        columns = columns[keep]
+        bearings = np.arctan2(
+            (rows - row) * grid.resolution, (columns - column) * grid.resolution
+        )
+        width = 2.0 * math.pi / float(self.LOOK_AT_BINS)
+        indices = np.floor((bearings + math.pi) / width).astype(np.int64)
+        np.clip(indices, 0, self.LOOK_AT_BINS - 1, out=indices)
+        weights = np.bincount(indices, minlength=self.LOOK_AT_BINS).astype(np.float64)
+        best = float(weights.max())
+        if best <= 0.0:
+            return None
+        # Ties (a symmetric unseen region) resolve toward the room interior when
+        # the caller knows it; otherwise the heaviest bin wins outright.
+        candidates = np.nonzero(weights >= 0.9 * best)[0]
+        centres = -math.pi + (candidates + 0.5) * width
+        if preferred_yaw is None:
+            chosen = float(centres[int(np.argmax(weights[candidates]))])
+        else:
+            deltas = np.abs(
+                np.arctan2(
+                    np.sin(centres - float(preferred_yaw)),
+                    np.cos(centres - float(preferred_yaw)),
+                )
+            )
+            chosen = float(centres[int(np.argmin(deltas))])
+        # Return a point at a real stand-off distance so the caller's
+        # ``atan2(look_at - target)`` is always well defined.
+        distance = max(0.75, 0.6 * self.information_radius)
         return (
-            grid.origin_x + (mean_column + 0.5) * grid.resolution,
-            grid.origin_y + (mean_row + 0.5) * grid.resolution,
+            grid.origin_x + (column + 0.5) * grid.resolution + math.cos(chosen) * distance,
+            grid.origin_y + (row + 0.5) * grid.resolution + math.sin(chosen) * distance,
         )
 
     def path_is_safe(
@@ -1557,12 +2489,22 @@ class TaskCoveragePlanner:
         grid: Optional[GridView],
         path: Sequence[Tuple[float, float]],
         minimum_clearance: Optional[float] = None,
+        despeckle: bool = False,
     ) -> bool:
         if grid is None or not path:
             return False
         data = np.asarray(grid.data)
-        occupied = data >= 50
-        clearance = distance_transform_edt(~occupied) * grid.resolution
+        # Judge the path on the same map the router used.  Routing already
+        # despeckles (navigation_path), but validating on the raw speckled grid
+        # made a single spurious occupied cell - routine at a door frame - mark
+        # the path unsafe, so the explorer abandoned a valid target every cycle
+        # (run47 floor 0 room 4: the robot rotated on the spot at the doorway
+        # while two opposite targets alternated every ~5.5 s).
+        if despeckle:
+            _safe, clearance = self._navigation_fields(grid, None, despeckle=True)
+        else:
+            occupied = data >= 50
+            clearance = distance_transform_edt(~occupied) * grid.resolution
         minimum = (
             self.navigation_clearance
             if minimum_clearance is None
@@ -1590,6 +2532,68 @@ class TaskCoveragePlanner:
                     return False
             previous_point = point
         return True
+
+    def _door_approach_target(
+        self,
+        nav_grid,
+        robot_pose,
+        gate_center,
+        forward_yaw,
+        assignment_portals,
+        owner_ids,
+        visited,
+        diagnostics,
+    ):
+        """A reachable viewpoint in front of a door whose room will not route.
+
+        Entering a room that has never been seen cannot be planned: the staged
+        crossing ends inside the room and that point is unknown by definition.
+        run50 floor 0 stalled in the corridor with four actionable portals where
+        every candidate was rejected as ``path_unreachable`` and the verified
+        door band held no cells -- the robot stood 8.5 m short of the door with
+        no corridor frontier left to drive to, so it never got close enough to
+        see through the opening and the room could never become plannable.
+
+        The returned target sits at the corridor staging point in front of that
+        door and carries the room as its topology owner, so the node treats it
+        as a doorway approach; the next cycle plans the crossing on the grown
+        map.
+        """
+        attempted_ids = {str(item) for item in (owner_ids or ()) if str(item)}
+        if not attempted_ids:
+            return None
+        best = None
+        for portal in assignment_portals or ():
+            topology_id = str(getattr(portal, "topology_id", ""))
+            if topology_id not in attempted_ids:
+                continue
+            stage = self._portal_waypoint(
+                gate_center, forward_yaw, float(portal.along), 0.0
+            )
+            if not door_approach_is_new(stage, visited, self.revisit_radius):
+                continue
+            path, length, clearance = self.navigation_path(
+                nav_grid, robot_pose, stage, None
+            )
+            if not path:
+                continue
+            if best is None or float(length) < float(best[1]):
+                best = (portal, float(length), tuple(path), float(clearance), stage)
+        if best is None:
+            return None
+        portal, length, path, clearance, stage = best
+        diagnostics["door_approach_portal"] = str(portal.topology_id)
+        return FrontierTarget(
+            kind="LASER_FRONTIER",
+            target=(float(stage[0]), float(stage[1])),
+            path=path,
+            path_length=length,
+            laser_gain=0.0,
+            camera_gain=0.0,
+            combined_gain=0.0,
+            min_clearance=clearance,
+            topology_id=str(portal.topology_id),
+        )
 
     def _review_target(self, grid, reachable, distance, point):
         rows, columns = np.nonzero(reachable)
@@ -1625,13 +2629,13 @@ class TaskCoveragePlanner:
         completed_topologies: Iterable[str] = (),
         confirmed_topologies: Iterable[str] = (),
         remembered_portals: Sequence[RoomPortal] = (),
-        rear_rooms_unlocked: bool = False,
         front_station_along_hint: Optional[float] = None,
         completed_front_sides: Iterable[str] = (),
         portal_prefix: str = "ROOM",
         force_laser_unknown: bool = False,
         portal_grid: Optional[GridView] = None,
         danger_guidance_level: int = 0,
+        interior_only: bool = False,
     ) -> CoveragePlan:
         empty = CoverageSnapshot(0.0, 0.0, 0.0, 0, 0, 0)
         if grid is None or robot_pose is None or gate_center is None or forward_yaw is None:
@@ -1700,8 +2704,66 @@ class TaskCoveragePlanner:
         # cells as connectors.  Applying the room mask to ``safe`` turns an
         # inferred portal line into a hard wall and is exactly the failure
         # mode seen when the lower half of both rooms becomes unreachable.
-        safe, _ = self._navigation_fields(nav_grid, None)
-        seed = self._nearest_seed(nav_grid, safe, robot_pose)
+        # Doorways first: a mis-detected obstacle sitting in a confirmed doorway
+        # is removed from the *map* used for planning, instead of being worked
+        # around downstream (verified door bands of 0 cells were the symptom).
+        completed_ids = {str(item) for item in completed_topologies}
+        confirmed_ids = {str(item) for item in confirmed_topologies}
+        door_portals = [
+            portal
+            for portal in remembered_portals
+            if str(portal.topology_id) in confirmed_ids
+            and str(portal.topology_id) not in completed_ids
+        ]
+        plan_grid = nav_grid
+        freed_cells = 0
+        if door_portals:
+            data = np.array(np.asarray(nav_grid.data), dtype=np.int16, copy=True)
+            rows, columns = np.indices(data.shape, dtype=np.float64)
+            xs = nav_grid.origin_x + (columns + 0.5) * nav_grid.resolution
+            ys = nav_grid.origin_y + (rows + 0.5) * nav_grid.resolution
+            dx = xs - float(gate_center[0])
+            dy = ys - float(gate_center[1])
+            along = dx * math.cos(float(forward_yaw)) + dy * math.sin(float(forward_yaw))
+            lateral = -dx * math.sin(float(forward_yaw)) + dy * math.cos(float(forward_yaw))
+            mask = np.zeros(data.shape, dtype=bool)
+            for portal in door_portals:
+                sign = 1.0 if str(portal.side) == "L" else -1.0
+                span = 0.5 * float(portal.width) + self.door_mask_margin
+                mask |= (
+                    (np.abs(along - float(portal.along)) <= span)
+                    & (lateral * sign >= -0.20)
+                    & (lateral * sign <= self.corridor_half_width + self.door_mask_depth)
+                )
+            freed_cells = clear_doorway_speckle(
+                data, mask, self.door_speckle_max_component
+            )
+            if freed_cells:
+                plan_grid = GridView(
+                    data, nav_grid.resolution, nav_grid.origin_x, nav_grid.origin_y
+                )
+        safe, clearance_field = self._navigation_fields(plan_grid, None)
+        # Reconnect a room whose *confirmed* doorway the inflated navigation map
+        # has sealed.  reachable is derived from safe, so this has to happen
+        # before the flood fill; without it the room holds unseen cells that no
+        # candidate can ever reach (run27 floor 0 front-right room: 11869 task
+        # cells, 260 reachable, 7654 unseen, room_reachable_camera_unseen = 0).
+        verified_band_cells = 0
+        verified_door_ids = []
+        if door_portals:
+            band = self.verified_door_band(
+                plan_grid, gate_center, forward_yaw, door_portals, clearance_field
+            )
+            safe = safe | band
+            verified_band_cells = int(np.count_nonzero(band))
+            verified_door_ids = sorted(
+                str(portal.topology_id) for portal in door_portals
+            )
+        # Reachability is rooted in the robot's own cell, with the same 3x3
+        # physical-occupancy window the router uses.  There is no nearest-safe
+        # seed: a robot standing where the clearance field is pessimistic must
+        # still be able to reach the map around it.
+        safe, seed = self._robot_local_safe(nav_grid, safe, robot_pose)
         if seed is None:
             return CoveragePlan(
                 snapshot,
@@ -1726,6 +2788,7 @@ class TaskCoveragePlanner:
         camera_unseen = eligible & ~seen
         visited = tuple((float(item[0]), float(item[1])) for item in visited_targets)
 
+        self.last_door_crossing_offset = None
         diagnostics = {
             "assignment_portal_count": 0,
             "room_task_cells": 0,
@@ -1733,12 +2796,34 @@ class TaskCoveragePlanner:
             "room_camera_unseen_cells": 0,
             "room_reachable_cells": 0,
             "room_reachable_camera_unseen_cells": 0,
+            # Which ownership every generated candidate carried, and how many
+            # camera viewpoints the corridor fallback had to rescue.  Without
+            # this a wrong_topology count cannot be attributed to a kind or an
+            # owner, which is what made the run26 deadlock take two cycles to
+            # localise.
+            "generated_kind_counts": {},
+            "corridor_camera_fallback": 0,
+            "locked_topology_family": [],
+            "verified_door_band_cells": verified_band_cells,
+            "verified_door_portals": verified_door_ids,
             "candidate_reject_counts": {
                 "visited_or_too_near": 0,
                 "wrong_topology": 0,
                 "unconfirmed_topology": 0,
                 "path_unreachable": 0,
+                "door_crossing_offset_used": None,
             },
+            "door_approach_dispatched": 0,
+            "door_approach_portal": None,
+            "door_approach_over_corridor": 0,
+            "observation_preemptions": 0,
+            "doorway_speckle_cells_freed": int(freed_cells),
+            "zone_split_along": None,
+            "active_zone": None,
+            "zone_topologies": [],
+            "zone_corridor_targets": 0,
+            "corridor_wander": None,
+
             "last_reject_reason": None,
         }
 
@@ -1778,6 +2863,42 @@ class TaskCoveragePlanner:
             if portal.topology_id in confirmed
             or portal.topology_id == str(topology_lock)
         ]
+        if self.portal_merge_radius > 0.0 and len(confirmed_portals) > 1:
+            # Collapse the bins of one physical doorway into a single candidate.
+            groups = []
+            for portal in sorted(confirmed_portals, key=lambda item: float(item.along)):
+                group = next(
+                    (
+                        candidate
+                        for candidate in groups
+                        if candidate[0].side == portal.side
+                        and abs(float(candidate[0].along) - float(portal.along))
+                        <= self.portal_merge_radius
+                    ),
+                    None,
+                )
+                if group is None:
+                    groups.append([portal])
+                    continue
+                group.append(portal)
+                locked_member = next(
+                    (
+                        member
+                        for member in group
+                        if str(member.topology_id) == str(topology_lock)
+                    ),
+                    None,
+                )
+                # The room already being worked keeps its own id; otherwise the
+                # widest opening represents the door.
+                group[0] = locked_member or max(
+                    group, key=lambda member: float(member.width)
+                )
+            merged = [group[0] for group in groups]
+            removed = len(confirmed_portals) - len(merged)
+            if removed > 0:
+                diagnostics["portals_merged_same_door"] = removed
+                confirmed_portals = merged
         # Guard against map seams being promoted to doorways.  The virtual
         # corridor-entrance gate is anchored a little off the corridor axis, and
         # the wall gaps around it are a recurring source of false candidates; a
@@ -1850,25 +2971,17 @@ class TaskCoveragePlanner:
             return bool(
                 portal.topology_id in completed
                 or any(
-                    old.side == portal.side
-                    and abs(float(old.along) - float(portal.along))
-                    <= station_tolerance
+                    doorways_match(portal, old, station_tolerance)
                     for old in completed_portals
                 )
             )
 
-        front_sides = {portal.side for portal in front_station_portals}
-        completed_sides = {
-            str(side) for side in completed_front_sides if str(side) in ("L", "R")
-        }
-        completed_sides.update(
-            portal.side
-            for portal in front_station_portals
-            if portal.topology_id in completed
-        )
-        front_rooms_complete = bool(
-            front_sides == {"L", "R"}
-            and completed_sides == {"L", "R"}
+        front_rooms_complete = front_stations_complete(
+            front_station_portals,
+            completed,
+            completed_portals,
+            completed_front_sides,
+            station_tolerance,
         )
         if topology_lock:
             assignment_portals = [
@@ -2012,7 +3125,14 @@ class TaskCoveragePlanner:
                         camera_gain=camera_gain,
                         combined_gain=combined,
                         min_clearance=min(clearance[grid.world_to_cell(*point)] for point in path),
-                        look_at=self._camera_look_at(cell, camera_unseen, grid),
+                        look_at=self._camera_look_at(
+                            cell,
+                            camera_unseen,
+                            grid,
+                            preferred_yaw=self._room_interior_yaw(
+                                cell, grid, gate_center, forward_yaw
+                            ),
+                        ),
                     )
                 )
 
@@ -2043,6 +3163,13 @@ class TaskCoveragePlanner:
                     min_clearance=min(clearance[grid.world_to_cell(*point)] for point in path),
                 )
             )
+
+        generated_kind_counts = {}
+        for item in targets:
+            generated_kind_counts[item.kind] = (
+                generated_kind_counts.get(item.kind, 0) + 1
+            )
+        diagnostics["generated_kind_counts"] = generated_kind_counts
 
         # Attach an online topology owner before ranking.  In the previous
         # ordering this happened after sorting, so every candidate was still
@@ -2120,17 +3247,168 @@ class TaskCoveragePlanner:
             for portal in assignment_portals
             if not portal_is_complete(portal)
         }
+        # Corridor halves: the near zone runs first, and while it does the far
+        # zone's doorways are not admissible at all.  Inside a zone the robot is
+        # free to move between its half-corridor and its rooms, so a locked room
+        # never removes every candidate (run55 floor 0 locked ROOM_R_3, produced
+        # no candidate and stood 1 m from the door until a watchdog fired).
+        zone_split = zone_split_along(assignment_portals, extent.forward_limit)
+        zone_now = active_zone(assignment_portals, completed, zone_split)
+        zone_topology_ids = {
+            portal.topology_id
+            for portal in assignment_portals
+            if zone_of_along(float(portal.along), zone_split) == zone_now
+            and not portal_is_complete(portal)
+        }
+        diagnostics["zone_split_along"] = round(float(zone_split), 2)
+        diagnostics["active_zone"] = zone_now
+        diagnostics["zone_topologies"] = sorted(zone_topology_ids)
+
+        def along_of(point):
+            return (
+                (float(point[0]) - float(gate_center[0])) * math.cos(float(forward_yaw))
+                + (float(point[1]) - float(gate_center[1])) * math.sin(float(forward_yaw))
+            )
+
+        def in_active_zone(point):
+            return zone_admits(along_of(point), zone_split, zone_now)
+
+        def next_doorway_along():
+            """Along the committed corridor leg should end at.
+
+            A doorway in the ACTIVE zone is preferred, but the leg is transit,
+            not a doorway approach: ANY point inside the active zone is an
+            acceptable landing (user rule), so when no doorway is known yet fall
+            back to the middle of the active zone's corridor, kept ahead of the
+            robot and inside the task extent.
+
+            The active-zone filter matters: door ids are 0.5 m bins
+            (``ROOM_L_35`` means along ~17.5) and a drifted bin sitting on the
+            zone split was chosen as the nearest doorway, so the leg stopped at
+            the split (~17.5 m) instead of reaching the far zone.
+            Measured on this building: corridor mouth 0.0, front doors 7.40,
+            partition 14.03, rear doors 21.50, far wall 28.06.
+            """
+            robot_along = along_of(robot_pose)
+            # "Not clearly near" instead of "== zone_now": the zone band and the
+            # drifting 0.5 m door bins made the zone tag unreliable (see below).
+            ahead = [
+                float(portal.along)
+                for portal in assignment_portals
+                if str(portal.topology_id) not in completed
+                and float(portal.along) > robot_along + 1.0
+                and float(portal.along) >= float(zone_split) - 1.0
+            ]
+            limit = float(extent.forward_limit)
+            if ahead:
+                landing = min(ahead) - COMMITTED_LANDING_SHORTEN
+            else:
+                # No doorway known beyond the split: any point in the far
+                # corridor is an acceptable landing.
+                landing = 0.5 * (float(zone_split) + limit)
+            if landing <= robot_along + 1.0 or limit <= 0.0:
+                return None
+            return min(landing, limit)
+
+        def corridor_wander_target(forward_only=False, descending=False, target_along=None):
+            """A guaranteed-safe transit point on the active zone's centreline.
+
+            The corridor is free space by construction, so this is always
+            dispatchable.  It is the last resort for both failure shapes seen so
+            far: every doorway-derived candidate filtered out (run58 floor 0) and
+            every candidate failing its route (run61 floor 0, where the pre-route
+            fallback could not help because the pool only emptied during
+            routing).
+
+            ``forward_only`` and ``descending`` turn it into the P3b committed
+            transit leg: longest forward centreline step first, shortened until
+            one is navigable.  ``target_along`` replaces the ladder with one
+            absolute along value - the next unfinished room doorway - so the
+            committed leg lands at the doorway instead of at an arbitrary
+            distance.  The active-zone admission test still applies, so the near
+            zone is always finished before a far-zone leg is allowed.
+            """
+            robot_along = along_of(robot_pose)
+            if target_along is not None:
+                reaches = (float(target_along) - robot_along,)
+            else:
+                reaches = corridor_transit_reaches(forward_only, descending)
+            for reach in reaches:
+                candidate_along = robot_along + reach
+                point = self._portal_waypoint(
+                    gate_center, forward_yaw, candidate_along, 0.0
+                )
+                if not zone_admits(candidate_along, zone_split, zone_now):
+                    continue
+                # Half the normal revisit radius: a transit point is worth
+                # re-driving after a failed excursion, it is not a viewpoint.
+                # The committed ``target_along`` mode is a transit leg, so a
+                # revisited doorway point must stay dispatchable - otherwise the
+                # leg silently falls back to frontier chasing.
+                if target_along is None and not door_approach_is_new(
+                    point, visited, 0.5 * self.revisit_radius
+                ):
+                    continue
+                wander_path, wander_length, wander_clearance = self.navigation_path(
+                    nav_grid, robot_pose, point, None
+                )
+                if not wander_path:
+                    continue
+                diagnostics["corridor_wander"] = float(reach)
+                return FrontierTarget(
+                    kind="LASER_FRONTIER",
+                    target=(float(point[0]), float(point[1])),
+                    path=tuple(wander_path),
+                    path_length=float(wander_length),
+                    laser_gain=0.0,
+                    camera_gain=0.0,
+                    combined_gain=0.0,
+                    min_clearance=float(wander_clearance),
+                    topology_id="CORRIDOR",
+                )
+            return None
         portal_order = {
             portal.topology_id: index
             for index, portal in enumerate(
                 sorted(assignment_portals, key=lambda item: (item.along, item.side))
             )
         }
+        interior_only = bool(interior_only)
         if topology_lock:
             before_topology_filter = len(targets)
+            # Portal ids are 0.5 m longitudinal bins of one physical doorway
+            # and they drift as SLAM refines the wall, so a target for the
+            # locked room can carry a neighbouring bin's id.  Matching the id
+            # exactly emptied the pool and burned the node's whole station
+            # budget without entering: on run26 floor 0 the explorer held
+            # ROOM_R_15 with candidate_topologies == () and
+            # last_plan_reason NO_FRONTIER for 59 consecutive sim seconds
+            # (wrong_topology dropped 27 candidates) and released the lock
+            # without entering, while that same doorway was simultaneously
+            # known as ROOM_R_30/36/39/43/48/52/56.  Accept every bin of the
+            # same physical door, using the tolerance the completion test
+            # already applies.
+            allowed_topologies = {str(topology_lock)}
+            locked_portal = next(
+                (
+                    portal
+                    for portal in confirmed_portals
+                    if portal.topology_id == str(topology_lock)
+                ),
+                None,
+            )
+            if locked_portal is not None:
+                allowed_topologies.update(
+                    portal.topology_id
+                    for portal in confirmed_portals
+                    if portal.side == locked_portal.side
+                    and abs(float(portal.along) - float(locked_portal.along))
+                    <= station_tolerance
+                )
+            diagnostics["locked_topology_family"] = sorted(allowed_topologies)
             locked_targets = [
                 item for item in targets
-                if item.topology_id == str(topology_lock)
+                if item.topology_id in allowed_topologies
             ]
             locked_camera = [
                 item for item in locked_targets
@@ -2150,10 +3428,34 @@ class TaskCoveragePlanner:
                 if guidance_level >= 3
                 else []
             )
+            locked_lasers = [
+                item for item in locked_targets if item.kind == "LASER_FRONTIER"
+            ]
+            # "Getting out is allowed": the rest of the zone - its half-corridor
+            # and, through the corridor pool below, its other room - stays
+            # admissible while a room is locked.  A locked room that runs out of
+            # candidates therefore falls back to driving the zone instead of
+            # standing still.
+            zone_corridor = (
+                []
+                if interior_only
+                else [
+                    # Corridor transit is lidar-only: the corridor is a camera
+                    # frontier exclusion zone (same rule as the fallback below).
+                    item
+                    for item in targets
+                    if item.kind == "LASER_FRONTIER"
+                    and item.topology_id == "CORRIDOR"
+                    and in_active_zone(item.target)
+                    and item not in locked_targets
+                ]
+            )
             targets = (
-                locked_camera
-                or [item for item in locked_targets if item.kind == "LASER_FRONTIER"]
-            ) + corridor_reviews
+                (locked_camera or locked_lasers)
+                + zone_corridor
+                + corridor_reviews
+            )
+            diagnostics["zone_corridor_targets"] = len(zone_corridor)
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
@@ -2167,8 +3469,11 @@ class TaskCoveragePlanner:
                 item for item in targets
                 if item.kind == "LASER_FRONTIER"
                 and (
-                    item.topology_id == "CORRIDOR"
-                    or item.topology_id in active_station_topologies
+                    (
+                        item.topology_id == "CORRIDOR"
+                        and in_active_zone(item.target)
+                    )
+                    or item.topology_id in zone_topology_ids
                 )
             ]
             detector_reviews = (
@@ -2176,7 +3481,48 @@ class TaskCoveragePlanner:
                 if guidance_level >= 1
                 else []
             )
-            targets = corridor_frontiers + detector_reviews
+            # User rule: while the far zone is active but the robot is still in
+            # the near half, a corridor CAMERA viewpoint beyond the split is the
+            # natural pull toward the far zone - admit it only for that crossing
+            # (the corridor stays a camera exclusion zone at all other times, so
+            # ordinary near-zone corridor transit is unchanged).
+            crossing = crossing_zone(zone_now, along_of(robot_pose), zone_split)
+            corridor_camera = (
+                [
+                    item for item in targets
+                    if item.kind == "CAMERA_FRONTIER"
+                    and item.topology_id == "CORRIDOR"
+                    and in_active_zone(item.target)
+                ]
+                if crossing
+                else []
+            )
+            diagnostics["corridor_camera_crossing"] = len(corridor_camera)
+            targets = corridor_frontiers + corridor_camera + detector_reviews
+            # Run the camera fallback whenever no surviving target belongs to a
+            # room -- not only when the list is empty.  On an upper floor the
+            # laser often produces exactly one corridor frontier (the rooms are
+            # already known in the shared 2-D frame, so no room laser frontier is
+            # generated) while the RGB-D side still owes coverage; because that
+            # single corridor frontier made the list non-empty, every one of the
+            # room camera viewpoints was discarded and the explorer toured the
+            # corridor for ever.  Measured live on run90 floor 1:
+            # generated_kind_counts {'CAMERA_FRONTIER': 128, 'LASER_FRONTIER': 1},
+            # room_eligible_cells 0, room_task_cells 0, target_kind
+            # LASER_FRONTIER/CORRIDOR with no room lock and no entry for 35+ sim s.
+            # The corridor target is kept as the fallback: the "room wins over
+            # corridor" filter below removes it as soon as a room target exists,
+            # and when the fallback is empty this is exactly the old
+            # ``if not targets`` behaviour.
+            # Restored to the validated baseline: the camera fallback runs only
+            # when NOTHING at all is left to do.  Widening it to "no room-owned
+            # target" was mine, and it is the single change behind every
+            # target-selection regression this session -- the robot walked to the
+            # lobby, walked back into a finished room, toured the corridor, and
+            # picked far-away viewpoints while standing at a doorway.  Its
+            # intended replacement is the explicit single gate
+            # ``admit_candidate`` plus a declared "unexplored room must have a
+            # target" invariant, not a wider pool.
             if not targets:
                 # "No unknown lidar cell left" is not "floor finished".  A room
                 # whose interior the laser already mapped from the corridor
@@ -2188,41 +3534,177 @@ class TaskCoveragePlanner:
                 # actionable_portals=16, camera coverage 0.414 against a 0.84
                 # target, and cmd_vel exactly 0 for 731 consecutive telemetry
                 # samples while ROOM_R_55 alone still had 5665 unseen cells.
-                # Admit camera viewpoints owned by unfinished rooms strictly as
-                # a last resort.  Normal corridor transit is untouched because
-                # this cannot run while any corridor lidar frontier exists, the
-                # confirmation and active-portal filters below still apply, and
-                # a floor whose portals are all complete still reports
-                # NO_FRONTIER.
-                targets = [
-                    item for item in unfiltered_targets
-                    if item.kind == "CAMERA_FRONTIER"
-                    and item.topology_id in active_station_topologies
-                ]
+                # Ownership is deliberately not checked here.  Portal ids are
+                # transient 0.5 m bins of one physical doorway and the room
+                # owner they imply changes as the map refines, so gating the
+                # fallback on an owner id drops exactly the viewpoints that are
+                # needed (run26 floor 0: wrong_topology discarded 29 camera
+                # candidates while the front-right room was still unvisited).
+                # A camera viewpoint is a safe action by construction -- it is
+                # generated only from reachable, still-unseen, safety-checked
+                # cells -- and the confirmation and completed-portal filters
+                # below still apply, so a floor whose rooms are all finished
+                # keeps reporting NO_FRONTIER.
+                # Room regions only: the corridor is a camera-frontier
+                # exclusion zone.  A corridor viewpoint is never a task here
+                # (the corridor is transit), so admitting one would put a
+                # corridor camera target straight back into the pool this
+                # fallback exists to fill with room entry points.
+                # ... and inside the task region: the lobby sits behind the
+                # entrance gate, outside the corridor band, so its cells carry a
+                # room-ish id even though the lobby is not a task region.
+                cosine, sine = math.cos(float(forward_yaw)), math.sin(float(forward_yaw))
+                fallback = (
+                    [
+                        item for item in unfiltered_targets
+                        if item.kind == "CAMERA_FRONTIER"
+                        and item.topology_id != "CORRIDOR"
+                        and (
+                            (item.target[0] - float(gate_center[0])) * cosine
+                            + (item.target[1] - float(gate_center[1])) * sine
+                        ) >= -0.5
+                        # ... and ahead of the robot along the corridor.
+                        and (
+                            (item.target[0] - float(robot_pose[0])) * cosine
+                            + (item.target[1] - float(robot_pose[1])) * sine
+                        ) >= -0.5
+                    ]
+                    if active_station_topologies
+                    else []
+                )
+                targets = fallback
+                diagnostics["corridor_camera_fallback"] = len(fallback)
+                if not targets and active_station_topologies:
+                    # P3b fallback: no frontier anywhere, so commit to one fixed
+                    # forward step on the corridor centreline that lands at the
+                    # next unfinished room doorway (measured ~6.5 m from the
+                    # partition to the rear doors in this building).  The node
+                    # runs it as the committed manoeuvre (centre, align,
+                    # measured run).
+                    doorway_along = next_doorway_along()
+                    wander = corridor_wander_target(
+                        forward_only=True,
+                        descending=True,
+                        target_along=doorway_along,
+                    )
+                    if wander is not None:
+                        targets = [wander]
+                        diagnostics["fixed_step_transit"] = 1
+                        if doorway_along is not None:
+                            diagnostics["committed_transit_along"] = float(
+                                doorway_along
+                            )
+                if not targets and active_station_topologies:
+                    # Nothing anywhere in the map: drive to the door of an
+                    # unfinished room so its interior gets observed.  run64
+                    # floor 1 sat at 3/4 with generated_kind_counts == {} and
+                    # corridor_wander None because every transit point was
+                    # already visited.
+                    approach = self._door_approach_target(
+                        nav_grid,
+                        robot_pose,
+                        gate_center,
+                        forward_yaw,
+                        assignment_portals,
+                        active_station_topologies,
+                        visited,
+                        diagnostics,
+                    )
+                    if approach is not None:
+                        targets = [approach]
+                        diagnostics["door_approach_dispatched"] = 1
+            else:
+                diagnostics["corridor_camera_fallback"] = 0
             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
                 before_topology_filter - len(targets)
             )
+        # The corridor is transit, not a task region.  As long as a room can be
+        # worked, a corridor frontier must not win the ranking: run79 drove the
+        # whole 36 m corridor (targets 14.05 -> 10.88 -> 6.79 -> 3.28 m) while
+        # four rear doorways were actionable, because the corridor's laser gain
+        # (~7.8) beats a room's (~2.7-4.5) in the corridor-phase ranking.  The
+        # corridor stays as the fallback target only when no room candidate
+        # exists (all rooms done, or nothing routable).
+        if not topology_lock:
+            room_targets = [item for item in targets if item.topology_id != "CORRIDOR"]
+            if room_targets:
+                targets = room_targets
+        # Ranking.  ``nearest`` keeps the historical nearest-frontier objective.
+        # ``gain_efficiency`` ranks by information gain per metre of travel, so
+        # a laser-weighted gain can actually outrank a marginally nearer
+        # viewpoint: with the old key the gain was only consulted when two
+        # paths were exactly the same length, which made the whole gain term
+        # decorative.
+        def rank_key(item, gain):
+            if self.target_rank_mode == "nearest":
+                return (target_priority(item), item.path_length, -gain, -item.min_clearance)
+            cost = max(float(item.path_length), 0.5)
+            return (
+                target_priority(item),
+                -(float(gain) / cost),
+                item.path_length,
+                -item.min_clearance,
+            )
+
         if topology_lock:
-            targets.sort(
-                key=lambda item: (
-                    target_priority(item),
-                    item.path_length,
-                    -item.combined_gain,
-                    -item.min_clearance,
-                )
-            )
+            targets.sort(key=lambda item: rank_key(item, item.combined_gain))
         else:
-            # The corridor is one large topology: choose the nearest lidar
-            # frontier regardless of which room interval it happens to lie
-            # in.  Portal order would recreate a hidden front/rear schedule.
-            targets.sort(
-                key=lambda item: (
-                    target_priority(item),
-                    item.path_length,
-                    -item.laser_gain,
-                    -item.min_clearance,
+            # Fixed forward is the FIRST priority once the far zone is active
+            # (explicit user command, 2026-09-14).  The corridor leg is a
+            # committed manoeuvre: while the landing along is still ahead, the
+            # pool is replaced outright.  Ranking frontiers first was what let
+            # the robot stall between them (zero-gain corridor frontiers, stuck
+            # target drops, then NO_FRONTIER for tens of seconds).
+            #
+            # The active-zone gate is what keeps this from opening the far zone
+            # early: ``zone_now == "B"`` only after every near-zone doorway is
+            # complete.  Once the landing is reached the ordinary targets (room
+            # viewpoints) take over again, so room entry is unaffected.
+            landing = next_doorway_along()
+            # Gate on "no clearly-near unfinished doorway" rather than on
+            # ``zone_now``: the zone band (1.5 m) classified a drifted bin at
+            # along ~18 (ROOM_L_36) as NEAR, so active_zone stayed "A" for ever
+            # and the fixed forward never fired (run134: zone A, committed None,
+            # a zero-gain ROOM_L_36 target, then a stuck drop).
+            near_unfinished = [
+                portal
+                for portal in assignment_portals
+                if str(portal.topology_id) not in completed
+                and float(portal.along) < float(zone_split) - 1.0
+            ]
+            if (
+                not near_unfinished
+                and landing is not None
+                and along_of(robot_pose) < float(landing) - 0.5
+            ):
+                transit = corridor_wander_target(
+                    forward_only=True,
+                    descending=True,
+                    target_along=landing,
                 )
-            )
+                # Only replace the pool when a dispatchable transit target
+                # exists; otherwise keep the ranked pool (the corridor contract
+                # test relies on corridor frontiers surviving here).
+                if transit is not None:
+                    diagnostics["fixed_step_transit"] = 1
+                    diagnostics["committed_transit_along"] = float(landing)
+                    targets = [transit]
+                else:
+                    diagnostics["fixed_step_transit"] = 0
+                    targets.sort(
+                        key=lambda item: (
+                            -projected_travel(robot_pose, item.target, forward_yaw),
+                            item.path_length,
+                        )
+                    )
+            else:
+                diagnostics["fixed_step_transit"] = 0
+                targets.sort(
+                    key=lambda item: (
+                        -projected_travel(robot_pose, item.target, forward_yaw),
+                        item.path_length,
+                    )
+                )
         # Keep the complete map-derived pool for diagnostics, even though
         # dispatch/ranking below uses only confirmed topology ownership.
         diagnostic_topologies = tuple(
@@ -2282,6 +3764,13 @@ class TaskCoveragePlanner:
                 or item.topology_id == "CORRIDOR"
                 or item.topology_id in confirmed
                 or item.topology_id == str(topology_lock)
+                # Frontier-first (P1): a frontier point that already lies behind
+                # the corridor wall is a room-interior target, so it must not
+                # wait for the doorway to accumulate confirmation evidence.  The
+                # doorway is only where the route crosses - not a gate the plan
+                # has to pass first.  Door evidence keeps deciding the region id
+                # and the coverage denominator (bookkeeping only).
+                or str(item.topology_id).endswith("_UNASSIGNED")
             )
         ]
         diagnostics["candidate_reject_counts"]["unconfirmed_topology"] += (
@@ -2308,6 +3797,13 @@ class TaskCoveragePlanner:
                 for item in targets
                 if item.topology_id == "CORRIDOR"
                 or item.topology_id in active_ids
+                # Frontier-first (P1b): a frontier behind the corridor wall is a
+                # room-interior target even when its doorway has not yet been
+                # confirmed into ``assignment_portals``.  Without this clause an
+                # upper floor kept only CORRIDOR targets once one room was done
+                # and drove up and down the corridor instead of entering the
+                # remaining rooms (reported on run82 floor 1).
+                or str(item.topology_id).endswith("_UNASSIGNED")
             ]
         # Candidate discovery/ranking remains nearest-frontier based.  Only
         # the selected executable route is replaced with orientation-aware
@@ -2315,6 +3811,8 @@ class TaskCoveragePlanner:
         if targets:
             chosen_index = None
             chosen = None
+            targets_attempted = list(targets)
+            failed_room_ids = []
             for index, candidate in enumerate(targets):
                 path, path_length, minimum = self.navigation_path(
                     nav_grid, robot_pose, candidate.target, None
@@ -2334,6 +3832,8 @@ class TaskCoveragePlanner:
                     self.corridor_half_width,
                     assignment_portals,
                 )
+                if not path and str(getattr(candidate, "topology_id", "CORRIDOR")) != "CORRIDOR":
+                    failed_room_ids.append(str(candidate.topology_id))
                 if portal is not None and robot_topology != candidate.topology_id:
                     path, path_length, minimum, _entry_depth = (
                         self.navigation_path_through_portal(
@@ -2344,6 +3844,7 @@ class TaskCoveragePlanner:
                         portal,
                         candidate.target,
                         None,
+                        self.door_crossing_wide_search,
                     )
                     )
                 if path:
@@ -2360,6 +3861,8 @@ class TaskCoveragePlanner:
                     )
                     if path_length > 8.0 and path_length > 3.0 * max(straight, 0.5):
                         diagnostics["candidate_reject_counts"]["path_unreachable"] += 1
+                        if str(getattr(candidate, "topology_id", "CORRIDOR")) != "CORRIDOR":
+                            failed_room_ids.append(str(candidate.topology_id))
                         continue
                     chosen_index = index
                     chosen = replace(
@@ -2370,14 +3873,138 @@ class TaskCoveragePlanner:
                     )
                     break
             if chosen is not None:
-                targets.pop(chosen_index)
-                targets.insert(0, chosen)
+                if prefer_room_approach(
+                    getattr(chosen, "topology_id", "CORRIDOR"),
+                    failed_room_ids,
+                    getattr(chosen, "combined_gain", None),
+                    len(active_station_topologies),
+                    self.observation_weak_gain,
+                ):
+                    approach = self._door_approach_target(
+                        nav_grid,
+                        robot_pose,
+                        gate_center,
+                        forward_yaw,
+                        assignment_portals,
+                        set(failed_room_ids),
+                        visited,
+                        diagnostics,
+                    )
+                    if approach is not None:
+                        diverting_for_observation = not failed_room_ids
+                        chosen = approach
+                        chosen_index = None
+                        diagnostics["door_approach_dispatched"] = 1
+                        diagnostics["door_approach_over_corridor"] = 1
+                        if diverting_for_observation:
+                            # Bought observation instead of a nearly worthless
+                            # corridor move.  Counted separately so the policy
+                            # can be judged on evidence: if these episodes do not
+                            # unlock frontiers or new known cells, the trigger is
+                            # costing time for nothing.
+                            diagnostics["observation_preemptions"] = (
+                                diagnostics.get("observation_preemptions", 0) + 1
+                            )
+                if chosen_index is None:
+                    targets.insert(0, chosen)
+                else:
+                    targets.pop(chosen_index)
+                    targets.insert(0, chosen)
             else:
                 diagnostics["candidate_reject_counts"]["path_unreachable"] += len(targets)
                 targets = []
+                approach = self._door_approach_target(
+                    nav_grid,
+                    robot_pose,
+                    gate_center,
+                    forward_yaw,
+                    assignment_portals,
+                    {
+                        getattr(item, "topology_id", None)
+                        for item in targets_attempted
+                    },
+                    visited,
+                    diagnostics,
+                )
+                if approach is not None:
+                    targets = [approach]
+                    diagnostics["door_approach_dispatched"] = 1
+                if not targets and not topology_lock and active_station_topologies:
+                    # Same P3b committed forward step as the empty-pool fallback
+                    # above, after every candidate failed to route: land at the
+                    # next unfinished room doorway.
+                    doorway_along = next_doorway_along()
+                    wander = corridor_wander_target(
+                        forward_only=True,
+                        descending=True,
+                        target_along=doorway_along,
+                    )
+                    if wander is not None:
+                        targets = [wander]
+                        diagnostics["fixed_step_transit"] = 1
+                        if doorway_along is not None:
+                            diagnostics["committed_transit_along"] = float(
+                                doorway_along
+                            )
+        if not targets and topology_lock:
+            # A locked room can yield *no* candidate at all - its interior is
+            # still unknown, so there is no frontier and no camera viewpoint to
+            # seed from.  run55 floor 0 locked ROOM_R_3 exactly like that and
+            # stood 1 m from its door for the rest of the run (tgt=None,
+            # cand=1).  Send the robot to the door so the next cycle can see in.
+            approach = self._door_approach_target(
+                nav_grid,
+                robot_pose,
+                gate_center,
+                forward_yaw,
+                assignment_portals,
+                {str(topology_lock)},
+                visited,
+                diagnostics,
+            )
+            if approach is not None:
+                targets = [approach]
+                diagnostics["door_approach_dispatched"] = 1
+        if (
+            not targets
+            and not topology_lock
+            and diagnostics["assignment_portal_count"] > 0
+        ):
+            # Last-resort corridor transit.  When nothing at all survives the
+            # filters the robot used to stand still on NO_FRONTIER (run129 floor
+            # 0: frozen at along 7.41 for 50+ sim seconds after the front pair
+            # retired, with a zero-gain ROOM_L_31 candidate that could not be
+            # routed).  This is the user's "first go to the corridor, then drive
+            # straight" rule, and it deliberately does NOT depend on
+            # ``active_station_topologies`` - that gate is exactly what left this
+            # case with no fallback at all.
+            doorway_along = next_doorway_along()
+            if doorway_along is not None:
+                transit = corridor_wander_target(
+                    forward_only=True,
+                    descending=True,
+                    target_along=doorway_along,
+                )
+                if transit is not None:
+                    targets = [transit]
+                    diagnostics["fixed_step_transit"] = 1
+                    diagnostics["committed_transit_along"] = float(doorway_along)
         if not targets:
             if diagnostics["assignment_portal_count"] == 0:
                 diagnostics["last_reject_reason"] = "NO_ASSIGNMENT_PORTAL"
+            elif not topology_lock:
+                # The room_* counters below are only populated while a room is
+                # locked.  Testing them in corridor ownership always matched
+                # the first branch and reported EMPTY_ROOM_TASK_MASK, which
+                # sent a whole debugging cycle after an empty room mask that
+                # had never been computed.  Report the ownership-local reasons
+                # instead.
+                if diagnostics["candidate_reject_counts"]["path_unreachable"]:
+                    diagnostics["last_reject_reason"] = "CANDIDATE_PATH_UNREACHABLE"
+                elif diagnostics["candidate_reject_counts"]["wrong_topology"]:
+                    diagnostics["last_reject_reason"] = "CANDIDATE_TOPOLOGY_MISMATCH"
+                else:
+                    diagnostics["last_reject_reason"] = "NO_FRONTIER_AFTER_FILTERS"
             elif diagnostics["room_task_cells"] == 0:
                 diagnostics["last_reject_reason"] = "EMPTY_ROOM_TASK_MASK"
             elif diagnostics["room_eligible_cells"] == 0:
@@ -2392,6 +4019,10 @@ class TaskCoveragePlanner:
                 diagnostics["last_reject_reason"] = "CANDIDATE_TOPOLOGY_MISMATCH"
             else:
                 diagnostics["last_reject_reason"] = "NO_FRONTIER_AFTER_FILTERS"
+        diagnostics["door_crossing_offset_used"] = self.last_door_crossing_offset
+        # Surfaced so a hung-looking plan can be told apart from a planner whose
+        # A* walk keeps hitting a cyclic predecessor chain.
+        diagnostics["predecessor_cycle_breaks"] = int(self.predecessor_cycle_breaks)
         return CoveragePlan(
             snapshot=snapshot,
             target=targets[0] if targets else None,

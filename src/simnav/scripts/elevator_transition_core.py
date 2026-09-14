@@ -10,6 +10,22 @@ def normalize_angle(angle):
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def door_frame_offset(point, doorway):
+    """Return ``(along, lateral)`` of a world point in the doorway frame.
+
+    ``along`` grows through the doorway into the car and ``lateral`` is the
+    sideways offset from the door centre line.  Boarding must only be committed
+    from the centre line: the first standalone lift test drifted to
+    lateral +0.49 m, scraped the shaft wall beside the 1.70 m opening, and
+    pushed there for 35 s without moving.
+    """
+    x, y, yaw = (float(value) for value in doorway[:3])
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    dx = float(point[0]) - x
+    dy = float(point[1]) - y
+    return (dx * cosine + dy * sine, -dx * sine + dy * cosine)
+
+
 def point_from_gate(gate, forward_offset, lateral_offset=0.0):
     """Return a world point in the entrance-gate tangent/normal frame."""
     x, y, yaw = (float(value) for value in gate[:3])
@@ -73,6 +89,91 @@ def height_transition_complete(start_z, current_z, minimum_rise):
 def entry_stall_confirms_containment(travelled, minimum_entry_progress):
     """Treat a post-threshold physical stop as a completed elevator entry."""
     return float(travelled) >= float(minimum_entry_progress)
+
+
+def entry_blocked_retry_allowed(travelled, minimum_progress, retries, retry_limit):
+    """Whether a short-travel front stop during elevator entry should be retried.
+
+    run49 completed floors 0 and 1 (4 rooms each) and then failed the whole
+    mission entering the car on the floor-1 return leg:
+    ``ELEVATOR_PATH_BLOCKED_AFTER_0.93M`` with a 0.27 m front clearance -- 7 cm
+    short of ``minimum_entry_progress``.  The scene's ``elevator_floor_1`` door
+    starts closed (``initial_open: false``) and animates open, so an early
+    contact is usually the door or jamb rather than a failed entry.  Retry a
+    bounded number of times, with a short reverse, before declaring the entry
+    blocked.
+    """
+    if float(travelled) >= float(minimum_progress):
+        return False
+    return int(retries) < int(retry_limit)
+
+
+def direct_entry_applies(distance, max_distance, enabled, blocked_seconds=0.0,
+                         fallback_seconds=25.0):
+    """Whether a target should be driven to directly instead of by A*.
+
+    The lift approach, the post-exit corridor move and the car entry are short
+    line-of-sight manoeuvres through a doorway whose free span has just been
+    measured.  Planning them tied the mission to a map that is still empty on a
+    freshly entered floor: run52 floor 2 burned 654 failed A* attempts and five
+    minutes crawling 2 m.  A blocked direct run still falls back to A* after
+    ``fallback_seconds`` so a real obstacle in the way is not ignored.
+    """
+    if not enabled:
+        return False
+    if float(distance) > float(max_distance):
+        return False
+    if float(blocked_seconds) > float(fallback_seconds):
+        return False
+    return True
+
+
+def direct_alignment_ready(heading_error, tolerance):
+    """Whether the robot may drive straight yet, or must turn on the spot first.
+
+    Driving forward while badly misaligned is what arced the robot into the wall
+    it was facing during run52's floor-2 topology drive.
+    """
+    return abs(float(heading_error)) <= float(tolerance)
+
+
+def tilt_fault_state(roll, pitch, roll_limit, pitch_limit, tilted_since, now, persist):
+    """Classify a tilt sample as ``ok``, ``pending`` or ``fault``.
+
+    A real tip-over holds the body tilted against gravity, so the test requires
+    the tilt to persist.  A single-sample metric spike must not end the mission:
+    run63 faulted with ROBOT_ROLLED when the world roll hit 0.45 rad for one
+    sample during a hard turn while the body IMU never left 0.12 rad.
+    """
+    tilted = abs(float(roll)) > float(roll_limit) or abs(float(pitch)) > float(
+        pitch_limit
+    )
+    if not tilted:
+        return "ok"
+    if tilted_since is None:
+        return "pending"
+    if float(now) - float(tilted_since) >= float(persist):
+        return "fault"
+    return "pending"
+
+
+def establish_budget_exceeded(started_wall, now_wall, timeout):
+    """Whether the floor-topology drive has used up its real-time budget.
+
+    The corridor point after the lift is a soft hint: with one 2D map per floor
+    the floor's own explorer maps the corridor anyway, so a route that cannot be
+    planned must not hold the mission inside the lift lobby.  run52 floor 2 spent
+    more than five minutes there with 654 failed A* attempts and a 0.45 m/s
+    open-loop crawl, against 107 s on floor 1.
+    """
+    if started_wall is None:
+        return False
+    return (float(now_wall) - float(started_wall)) > float(timeout)
+
+
+def elevator_door_id(floor_index, prefix="elevator_floor"):
+    """Scene door id serving one elevator floor."""
+    return "{}_{}".format(str(prefix), int(floor_index))
 
 
 def transform_pose_between_frames(point, source_pose, target_pose):
@@ -210,3 +311,13 @@ def detect_wide_lobby_openings(
                 "pose": (centre[0], centre[1], heading),
             })
     return tuple(sorted(candidates, key=lambda item: (-item["width"], -item["support"])))
+
+
+def clamp_linear_speed(value, maximum):
+    """Clamp a commanded linear speed into [-maximum, +maximum].
+
+    Shared with the explorer: the mission stays at or below 0.60 m/s everywhere
+    (transit, lift approach, door crossings) until the three-floor run is stable.
+    """
+    limit = max(0.0, float(maximum))
+    return max(-limit, min(limit, float(value)))

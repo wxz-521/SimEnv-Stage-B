@@ -24,7 +24,7 @@ LOCAL_SENSOR_FRAME = "laser_livox"
 ODOM_TOPIC = "/Odometry_gazebo"
 m_buf = Lock()
 latest_odom = None
-use_ground_truth_odom = True
+use_ground_truth_odom = False
 
 
 def _get_struct_fmt(pointcloud2):
@@ -52,7 +52,7 @@ def _get_struct_fmt(pointcloud2):
 def pointcloud2_to_custommsg(pointcloud2):
     custom_msg = CustomMsg()
     custom_msg.header = pointcloud2.header
-    custom_msg.timebase = rospy.Time.now().to_nsec()
+    custom_msg.timebase = pointcloud2.header.stamp.to_nsec()
     custom_msg.point_num = pointcloud2.width
     custom_msg.lidar_id = 1  # Assuming lidar_id is 1
     custom_msg.rsvd = [0, 0, 0]  # Reserved fields
@@ -64,7 +64,8 @@ def pointcloud2_to_custommsg(pointcloud2):
         x, y, z = struct.unpack(fmt, point_data)
 
         custom_point = CustomPoint()
-        custom_point.offset_time = rospy.Time.now().to_nsec() - custom_msg.timebase
+        # Gazebo publishes each simulated Livox frame at one sensor timestamp.
+        custom_point.offset_time = 0
         custom_point.x = x
         custom_point.y = y
         custom_point.z = z
@@ -250,7 +251,7 @@ def main():
     max_angle = rospy.get_param('~max_angle',60)   # 默认上限45度
     rospy.loginfo(f"Angle filter : {min_angle} ~ {max_angle} deg")
 
-    use_ground_truth_odom = rospy.get_param('~use_ground_truth_odom', True)
+    use_ground_truth_odom = rospy.get_param('~use_ground_truth_odom', False)
     rospy.loginfo(f"Use ground-truth odom for /livox/Pointcloud2: {use_ground_truth_odom}")
 
     # 订阅原始点云；真值里程计仅在显式开启时订阅。

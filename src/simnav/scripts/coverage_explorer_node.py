@@ -2,10 +2,13 @@
 """Direct corridor-and-room exploration using laser/camera joint coverage."""
 
 import json
+from dataclasses import replace
+import faulthandler
 import math
 import os
 import sys
 import threading
+import time
 import traceback
 from collections import deque
 
@@ -27,26 +30,34 @@ if not sys.path or sys.path[0] != SCRIPT_DIRECTORY:
     sys.path.insert(0, SCRIPT_DIRECTORY)
 
 from coverage_explorer_core import (
+    leg_speed,
     FrontierTarget,
     GridView,
     RoomPortal,
     TaskCoveragePlanner,
-    corrected_portal_heading,
+    clamp_linear_speed,
     coverage_classification,
-    detect_sphere_like_clusters,
-    task_region_mask,
-    infer_task_extent,
-    detect_room_portals,
     detect_lobby_portals,
+    detect_room_portals,
+    detect_sphere_like_clusters,
+    door_crossing_along_offsets,
+    doorways_match,
+    infer_task_extent,
+    interior_targets_only,
     measure_corridor_walls,
     normalize_angle,
-    pair_room_portals,
-    portal_return_along_offsets,
     opposite_room_portal,
-    topology_state_for_new_target,
+    pair_room_portals,
+    region_of_point,
+    region_status,
+    room_lock_for_target,
     target_kind_allowed_for_topology_state,
+    target_switch_allowed,
+    task_region_mask,
     topology_completion_ready,
     topology_id_for_point,
+    topology_state_for_new_target,
+    unsafe_path_replan_needed,
 )
 
 
@@ -65,6 +76,43 @@ class CoverageExplorer:
         self.initial_forward_distance = max(
             0.0, float(rospy.get_param("~initial_forward_distance", 14.5))
         )
+        # On an upper floor the elevator node has already published the gate by
+        # the time this node starts, so ``gate_source`` is not None and the
+        # entrance-transit branch used to be skipped entirely: the robot began
+        # exploring from the lift mouth instead of sweeping the front doorways
+        # first (run112 floor 1: 12 stuck target drops, every room ~0.05, and no
+        # room-interior candidate was dispatchable).  This flag keeps the
+        # transit running until the configured distance is actually covered.
+        self.initial_forward_complete = False
+        # Far-zone committed transit (the "fixed forward"): get onto the corridor
+        # centreline, align with the corridor axis, then run one measured
+        # distance to the next unfinished doorway.  Same shape as the lift
+        # return leg in the elevator node.
+        self.committed_transit = None
+        self.committed_center_tolerance = max(
+            0.05, float(rospy.get_param("~committed_center_tolerance", 0.20))
+        )
+        self.committed_arrival_tolerance = max(
+            0.05, float(rospy.get_param("~committed_arrival_tolerance", 0.30))
+        )
+        self.committed_speed = max(
+            0.10, float(rospy.get_param("~committed_speed", 0.45))
+        )
+        # The robot has just stood up and switched to the RL gait when the
+        # transit starts, so the commanded speed ramps in instead of hitting the
+        # target on the first tick.  run70 tipped over (imu_roll -> pi) at
+        # sim 11 s while being commanded 0.90 m/s from a standstill, within the
+        # fall detector's startup grace, so the run continued on its side.
+        self.initial_forward_start_speed = max(
+            0.05, float(rospy.get_param("~initial_forward_start_speed", 0.25))
+        )
+        self.initial_forward_ramp_seconds = max(
+            0.0, float(rospy.get_param("~initial_forward_ramp_seconds", 4.0))
+        )
+        self.initial_forward_settle_seconds = max(
+            0.0, float(rospy.get_param("~initial_forward_settle_seconds", 2.0))
+        )
+        self.forward_started_stamp = None
         self.initial_forward_speed = max(
             0.05, float(rospy.get_param("~initial_forward_speed", 0.60))
         )
@@ -110,6 +158,11 @@ class CoverageExplorer:
         )
         self.forward_anchor = None
         self.forward_yaw = None
+        self.transit_started_wall = None
+        self.transit_fallbacks = 0
+        self.transit_timeout_seconds = max(
+            15.0, float(rospy.get_param("~transit_timeout_seconds", 60.0))
+        )
         self.world_forward_yaw = None
         self.lobby_entry_source = None
         self.lobby_entry_world = None
@@ -166,6 +219,11 @@ class CoverageExplorer:
             0.5, float(rospy.get_param("~completion_stable_duration", 3.0))
         )
         self.completion_since = None
+        # The floor-completion latch is also driven from the control loop, so it
+        # cannot be blocked by a paused planning callback; throttled here.
+        self.last_completion_check = None
+        # Diagnostic: plan cycles that could not run because an input was missing.
+        self.plan_input_gaps = 0
         self.task_back_extension = float(rospy.get_param("~task_back_extension", 3.45))
         self.task_entry_buffer = max(
             0.0, float(rospy.get_param("~task_entry_buffer", 0.45))
@@ -178,6 +236,17 @@ class CoverageExplorer:
             revisit_radius=float(rospy.get_param("~frontier_revisit_radius", 0.70)),
             information_radius=float(rospy.get_param("~information_radius", 2.5)),
             camera_weight=self.camera_weight,
+            # Gain and coverage are deliberately different objectives: coverage
+            # (camera_weight) decides when a room is finished, the gain decides
+            # which viewpoint is worth driving to.  A lower camera share in the
+            # gain lets laser/map knowledge steer the camera to places it can
+            # actually see, while the target kind stays CAMERA_FRONTIER.
+            gain_camera_weight=float(
+                rospy.get_param("~gain_camera_weight", 0.50)
+            ),
+            target_rank_mode=str(
+                rospy.get_param("~target_rank_mode", "gain_efficiency")
+            ),
             back_extension=self.task_back_extension,
             forward_depth=float(rospy.get_param("~task_forward_depth", 24.6)),
             lateral_half_width=float(rospy.get_param("~task_lateral_half_width", 9.5)),
@@ -216,21 +285,138 @@ class CoverageExplorer:
             rospy.get_param("~show_room_virtual_doors", False)
         )
         self.replan_period = max(0.25, float(rospy.get_param("~replan_period", 1.0)))
+        # Diagnostic only: a plan cycle that never returns freezes the explorer
+        # (run146: an unguarded A* predecessor walk burned a core for minutes
+        # while the robot sat still on a stale plan target).  Crossing this means
+        # "stuck", not "busy"; faulthandler then dumps every thread's stack into
+        # this node's ROS log.  0 disables it.
+        self.plan_watchdog_seconds = max(
+            0.0, float(rospy.get_param("~plan_watchdog_seconds", 30.0))
+        )
         self.target_tolerance = max(0.15, float(rospy.get_param("~target_tolerance", 0.35)))
+        # Pure-pursuit look-ahead: steer at the point this far AHEAD along the
+        # path instead of at the next 0.1 m cell.  Steering at the next cell made
+        # a 0.1 m lateral error (at the 0.35 m arrival tolerance) look like a
+        # 0.28 rad bearing error, i.e. an in-place turn, and the re-anchored path
+        # flipped it back - the endless circling.  0 restores the old behaviour.
         self.heading_tolerance = max(0.08, float(rospy.get_param("~heading_tolerance", 0.25)))
         self.motion_stop_distance = max(0.30, float(rospy.get_param("~motion_stop_distance", 0.48)))
         self.motion_speed = max(0.30, float(rospy.get_param("~motion_speed", 0.60)))
-        # Corridor-only transit may run faster than room exploration.  The
-        # competition scores exploration time, but raising the speed inside a
-        # room changes camera-frontier reachability and was never validated;
-        # the rear corridor transit is a straight 12 m run with no coverage
-        # objective, so it gets its own knob.  Doorway crossings stay capped at
-        # 0.25 m/s in _control.
-        self.transit_speed = max(
-            self.motion_speed, float(rospy.get_param("~transit_speed", self.motion_speed))
+        # Hard ceiling for every linear command in this node (mission decision:
+        # 0.60 m/s everywhere until three floors are stable).
+        self.max_linear_speed = max(
+            0.10, float(rospy.get_param("~max_linear_speed", 0.60))
+        )
+        # Lobby/entrance transit ceiling: the doorway is ~1.1 m wide, so full
+        # mission speed is too fast to correct a lateral drift before the jamb.
+        self.transit_speed_cap = max(
+            0.10, float(rospy.get_param("~transit_speed_cap", 0.35))
+        )
+        # How far in front of the entrance the reduced transit cap applies.
+        self.transit_jamb_zone = max(
+            0.5, float(rospy.get_param("~transit_jamb_zone", 2.0))
         )
         self.turn_speed = max(0.15, float(rospy.get_param("~turn_speed", 0.65)))
+        # Path-leg speed shaping (user rule): do not hold the maximum speed the
+        # whole time - ramp in from a stop and out near the goal, with a floor so
+        # the ramp never crawls and wastes time.  Same shape as the entry
+        # transit's ramp, applied to ordinary target driving.
+        self.leg_accel_seconds = max(
+            0.0, float(rospy.get_param("~leg_accel_seconds", 1.5))
+        )
+        self.leg_decel_distance = max(
+            0.0, float(rospy.get_param("~leg_decel_distance", 1.0))
+        )
+        self.leg_ramp_floor_fraction = min(
+            1.0, max(0.0, float(rospy.get_param("~leg_ramp_floor_fraction", 0.45)))
+        )
+        self.leg_minimum_speed = max(
+            0.0, float(rospy.get_param("~leg_minimum_speed", 0.20))
+        )
+        # Ramp clock: None while turning/stopped, set when a walk resumes.
+        self.walk_ramp_started = None
         self.review_hold_duration = max(0.5, float(rospy.get_param("~sphere_review_hold", 2.0)))
+        # Bounded alignment.  Both the waypoint bearing and a camera frontier's
+        # look_at can flip while the robot is turning towards them (the unseen
+        # centroid moves as cells are observed, and the planner may replace the
+        # target).  The control law is "rotate on the spot while |error| is
+        # above tolerance", so a bearing that flips faster than the robot can
+        # turn pins it in place for ever: run33 sat just inside ROOM_L_15 with
+        # cmd_vx == 0 for 8.4 sim seconds while cmd_wz alternated +0.65/-0.65,
+        # never making progress.  After this long without the error coming down,
+        # trade perfect alignment for motion.
+        self.max_align_seconds = max(
+            2.0, float(rospy.get_param("~max_align_seconds", 8.0))
+        )
+        self.align_progress_error = max(
+            0.05, float(rospy.get_param("~align_progress_error", 0.30))
+        )
+        # In-node liveness backstop.  A target can be held while the control
+        # loop keeps taking a stop path and never issues a drive command:
+        # run41 stood on the corridor centreline with an active ROOM_R_15
+        # camera frontier for 246 s, publishing cmd_vel == (0, 0) in 674 of
+        # 681 telemetry samples while the planner still reported reason=TARGET.
+        # An external watchdog can only kill such a run; dropping the stuck
+        # target lets the planner choose something else and the mission go on.
+        # Legitimate holds are shorter (review hold 2.0 s, camera hold 0.6 s).
+        self.stuck_target_seconds = max(
+            2.0, float(rospy.get_param("~stuck_target_seconds", 5.0))
+        )
+        # A dropped or collision-blocked target must stay out of the pool long
+        # enough that the planner is forced to choose a different action.  A
+        # 5 s cooldown let run65 re-dispatch the identical 19.5 m corridor
+        # frontier every ~4 minutes: dispatch -> controller stops (front
+        # blocked) -> backstop drops -> same target again.
+        self.stuck_target_cooldown = max(
+            10.0, float(rospy.get_param("~stuck_target_cooldown_seconds", 120.0))
+        )
+        self.collision_block_seconds = max(
+            6.0, float(rospy.get_param("~collision_block_seconds", 45.0))
+        )
+        self.stuck_target_drops = 0
+        self.control_faults = 0
+        self.plan_faults = 0
+        self.empty_path_cycles = 0
+        # Last-centimetre creep so a frontier just ahead of the robot is
+        # actually driven to before it counts as reached.
+        self.creep_stop_distance = max(
+            0.10, float(rospy.get_param("~creep_stop_distance", 0.20))
+        )
+        self.creep_speed = max(
+            0.10, float(rospy.get_param("~creep_speed", 0.25))
+        )
+        # Debounce a path judged unsafe so one scan dropout cannot churn the
+        # target, and cool the abandoned target so the planner cannot hand it
+        # straight back (run47 doorway rotation, two opposite targets every
+        # ~5.5 s).
+        self.unsafe_path_cycles = 0
+        # Route refreshes are keyed by goal position: refreshing a route is a
+        # routing fix, and only a bounded number of failures means the target is
+        # genuinely bad.
+        self.route_refresh_counts = {}
+        self.route_refreshes = 0
+        self.max_route_refreshes = max(
+            1, int(rospy.get_param("~max_route_refreshes", 3))
+        )
+        self.unsafe_path_replans = 0
+        self.unsafe_path_replan_cycles = max(
+            1, int(rospy.get_param("~unsafe_path_replan_cycles", 3))
+        )
+        self.unsafe_path_block_seconds = max(
+            0.0, float(rospy.get_param("~unsafe_path_block_seconds", 45.0))
+        )
+        self.last_motion_command_stamp = rospy.Time.now()
+        # The liveness backstop must watch real displacement, not commands.  In
+        # run44 the A/B flip-flop at the ROOM_R_15 approach made the robot emit
+        # brief non-zero rotation commands every few seconds without ever
+        # moving: the command stamp kept resetting, so a command-based timer
+        # never fired (stuck_target_drops == 0 while the robot sat still for
+        # 245 s until an external watchdog killed the run).
+        self.last_progress_position = None
+        self.last_progress_yaw = 0.0
+        self.last_progress_stamp = rospy.Time.now()
+        self.align_since = None
+        self.align_best_error = math.pi
         self.camera_resolution = max(0.05, float(rospy.get_param("~camera_resolution", 0.25)))
 
         self.camera_points_world = set()
@@ -240,9 +426,28 @@ class CoverageExplorer:
         )
         self.camera_update = rospy.Time(0)
         self.current_plan = None
+        # How long a target must be held before a fresher one may replace it,
+        # and the gain margin the fresher one must clear (see
+        # target_switch_allowed).  The user requirement is that the target point
+        # may change before it is reached; these bounds are what stops that from
+        # turning into the old oscillation.
+        self.target_switch_dwell = max(
+            0.0, float(rospy.get_param("~target_switch_dwell", 8.0))
+        )
+        # Planning cost, for "why does the target change take so long" questions.
+        # plan_cycles already existed; only the duration and the switch counter
+        # are new.
+        self.last_plan_ms = 0.0
+        self.target_switches = 0
         self.active_target = None
         self.active_path = ()
         self.path_index = 0
+        # T-E observable: distance between the robot's own pose and the first
+        # point of the path it was just given.  A* starts from the nearest
+        # traversable cell, so a non-zero value is T1 ("路径起点不在机器人脚下")
+        # made measurable instead of inferred from a screenshot.  Pure
+        # diagnostic: nothing reads it back.
+        self.path_start_offset = None
         self.last_plan_time = rospy.Time(0)
         self.plan_cycles = 0
         self.plan_failures = 0
@@ -260,44 +465,20 @@ class CoverageExplorer:
         self.topology_states = {}
         self.topology_miss_cycles = {}
         self.returning_topology = None
-        # The rear pair is deliberately inaccessible until both rooms at the
-        # entrance-nearest station have completed and returned to CORRIDOR.
-        self.rear_transit_distance = max(
-            1.0, float(rospy.get_param("~rear_transit_distance", 12.0))
-        )
-        self.rear_transit_active = False
-        self.rear_transit_start_along = None
-        self.rear_rooms_unlocked = False
         self.front_station_along = None
         self.front_station_topologies = set()
+        # Doorway identity tolerance for matching a completed room to a front
+        # station whose transient id has drifted (run46 floor 2).
+        self.front_station_match_tolerance = max(
+            0.1, float(rospy.get_param("~front_station_match_tolerance", 2.5))
+        )
+        # A live doorway this close to a seeded/remembered one is the same
+        # physical opening: the remembered id keeps the bookkeeping and the live
+        # geometry replaces the seeded estimate.
+        self.doorway_merge_tolerance = max(
+            0.2, float(rospy.get_param("~doorway_merge_tolerance", 1.5))
+        )
         self.completed_front_sides = set()
-        # Door search is deliberately stop-and-go.  A one-metre segment gives
-        # lidar a new viewpoint, then the robot stops while temporal portal
-        # evidence is rebuilt.  The short phase limit prevents this fallback
-        # from driving past the front station toward the rear rooms.
-        self.door_search_step_distance = max(
-            0.25, float(rospy.get_param("~door_search_step_distance", 1.0))
-        )
-        self.door_search_front_limit = max(
-            self.door_search_step_distance,
-            float(rospy.get_param("~door_search_front_limit", 3.0)),
-        )
-        self.door_search_rear_limit = max(
-            self.door_search_step_distance,
-            float(rospy.get_param("~door_search_rear_limit", 3.0)),
-        )
-        self.door_search_wait_cycles = max(
-            1, int(rospy.get_param("~door_search_wait_cycles", 3))
-        )
-        self.door_search_enabled = bool(
-            rospy.get_param("~door_search_enabled", False)
-        )
-        self.door_search_active = False
-        self.door_search_step_start_along = None
-        self.door_search_travel = 0.0
-        self.door_search_idle_cycles = 0
-        self.door_search_phase = "FRONT"
-        self.door_search_sweep_phase = None
         self.room_scope_announced = None
         self.portal_evidence = {}
         self.portal_last_seen = {}
@@ -314,16 +495,6 @@ class CoverageExplorer:
         self.active_target_last_progress = None
         self.active_target_last_progress_stamp = rospy.Time(0)
         self.active_target_last_distance = None
-        self.target_replacements = 0
-        self.target_replace_min_age = max(
-            1.0, float(rospy.get_param("~target_replace_min_age", 4.0))
-        )
-        self.target_replace_gain_ratio = max(
-            1.05, float(rospy.get_param("~target_replace_gain_ratio", 1.30))
-        )
-        self.target_replace_stall = max(
-            3.0, float(rospy.get_param("~target_replace_stall", 8.0))
-        )
         self.room_completion_miss_cycles = max(
             2, int(rospy.get_param("~room_completion_miss_cycles", 3))
         )
@@ -352,6 +523,79 @@ class CoverageExplorer:
         self.room_frontier_wait_cycles = int(
             rospy.get_param("~room_frontier_wait_cycles", 0)
         )
+        # A room is released only when its coverage target is met *and* it has no
+        # executable candidate left.  Reaching the target alone used to hand the
+        # lock back while a large part of the room was still unseen (observed in
+        # RViz: a big camera-unseen area left behind in the left room), which
+        # also made the robot look like it entered and immediately left.  The
+        # grace bounds the extra work so a candidate that can never be cleared
+        # cannot hold the floor: after this many sim seconds past the target the
+        # room is released regardless.
+        self.room_exhaust_grace_seconds = max(
+            0.0, float(rospy.get_param("~room_exhaust_grace_seconds", 60.0))
+        )
+        # A remaining candidate only keeps the room alive while it is worth the
+        # travel, measured as the local information gain it would reveal (m^2).
+        # Once the room is past its target this is what stops the robot
+        # sweeping marginal wall pockets: measured on run35, ROOM_R_15 was at
+        # 0.966 coverage and still chasing far-wall viewpoints.
+        self.room_exhaust_min_gain = max(
+            0.0, float(rospy.get_param("~room_exhaust_min_gain", 1.5))
+        )
+        # Whether a met target still has to wait for its candidates to run out.
+        # ``False`` (default) releases the room the moment the target is met,
+        # which is what makes a lowered target actually reduce exploration time.
+        # ``True`` keeps sweeping while a candidate worth more than
+        # ``room_exhaust_min_gain`` remains; that was added to stop the robot
+        # abandoning a large unseen area at a 0.84 target, but at 0.55 it simply
+        # overrides the target: run35 kept working ROOM_R_15 up to 0.966 while
+        # the target was 0.55.
+        self.room_exit_requires_gain = bool(
+            rospy.get_param("~room_exit_requires_gain", False)
+        )
+        # Doorway commitment band (metres of |lateral| about the corridor
+        # centreline).  While the robot is inside it, swapping the active target
+        # turns a doorway crossing into a shuttle: measured on run38 the robot
+        # alternated between lateral 0.27 and 1.27 across the ROOM_L_15 door
+        # line for ~35 sim seconds with cmd_vx == 0 most of the time and
+        # cmd_wz flipping between +0.65 and -0.65, and never got into the room.
+        # The doorway hold band that used to refuse target swaps here is gone:
+        # with the corridor staging waypoint removed the crossing route stays
+        # monotone, and the plan install no longer swaps targets at all (the
+        # active target is only cleared when it is reached or has failed).
+        # The corridor return used to be considered finished as soon as the
+        # robot was within corridor_half_width - 0.10 of the centreline, which
+        # the doorway itself satisfies.  Floors therefore ended inside a door
+        # frame: run29 parked at a cell with 0.22 m clearance, where A* refuses
+        # to plan (safe[start] is False below navigation_clearance) and the
+        # elevator transition faulted with ROUTE_UNREACHABLE.  A floor may now
+        # only latch once the robot is genuinely on the centreline and its own
+        # cell is navigable on the same map the elevator plans on.
+        self.floor_end_corridor_tolerance = max(
+            0.15, float(rospy.get_param("~floor_end_corridor_tolerance", 0.35))
+        )
+        self.room_entry_counts = {}
+        # T-E observable: every confirmed doorway crossing, in order, as
+        # (sim, floor, room_id, nth-entry-on-that-floor).  Run-level on purpose:
+        # ``room_entry_counts`` is reset per floor, so it cannot answer "did the
+        # robot leave a room and come back later in the run".  Pure diagnostic.
+        self.room_entry_sequence = []
+        self.lock_release_counts = {}
+        # Interior-target discipline: after entering a room the target may not be
+        # moved back to the corridor until the interior has failed this many
+        # times (user policy: free re-orientation inside, bounded escape out).
+        self.room_interior_retries = {}
+        self.interior_retry_limit = max(
+            1, int(rospy.get_param("~interior_retry_limit", 3))
+        )
+        self.max_lock_releases = max(
+            1, int(rospy.get_param("~max_lock_releases", 3))
+        )
+        self._end_pose_clearance_cache = None
+        # Topologies this run has already finished or parked.  A retired room is
+        # never entered again, which makes "enter the door, come back out, go
+        # in again" structurally impossible instead of merely unlikely.
+        self.retired_topologies = set()
         self.latest_snapshot = None
         self.floor_complete = False
         self.floor_index = 0
@@ -558,6 +802,17 @@ class CoverageExplorer:
             return
         if floor_index <= 0:
             return
+        # Upper floors are isomorphic to the ground floor, so seed the reference
+        # floor's doorways here.  Reuse was deleted once because the seeded
+        # geometry was trusted verbatim: on run80's top floor those portals kept
+        # evidence=1 while the live map detected the real openings with evidence
+        # 61-72, and every crossing route aimed at the stale geometry failed
+        # (CANDIDATE_PATH_UNREACHABLE).  Neither extreme works - without seeding
+        # an upper floor produces only corridor targets and wanders (run126
+        # floor 1: "reused 0 topology portals", no ROOM target for 110+ s).  So
+        # seed AND refresh: the seeded ids are confirmed immediately (room
+        # targets exist from the first cycle) and the live map overwrites their
+        # geometry through ``doorways_match`` in ``_plan_impl``.
         reused_portals = self._reused_floor_portals(payload)
         with self.lock:
             if self.floor_index == floor_index and not self.floor_complete:
@@ -571,6 +826,8 @@ class CoverageExplorer:
             # lidar does not have to prove the walls from scratch again.
             self.floor_laser_isolated = not reused_portals
             self.floor_complete = False
+            self.initial_forward_complete = False
+            self.committed_transit = None
             self.gate_source = gate
             self.gate_world = gate_world
             self.topology_region = "CORRIDOR"
@@ -595,8 +852,6 @@ class CoverageExplorer:
                 self.reused_portals.add(portal.topology_id)
             self.topology_lock = None
             self.returning_topology = None
-            self.rear_transit_active = False
-            self.rear_rooms_unlocked = False
             self.front_station_along = None
             self.front_station_topologies.clear()
             self.completed_front_sides.clear()
@@ -614,6 +869,13 @@ class CoverageExplorer:
             self.elevator_portal = None
             self.elevator_portal_world = None
             self.elevator_portal_evidence = 0
+            # Entry bookkeeping is per floor: upper floors reuse the same 2-D
+            # frame and the same doorway ids, so keeping the ground floor's
+            # counts would make every upper room look like a re-entry.
+            self.room_entry_counts = {}
+            self.lock_release_counts = {}
+            self.room_interior_retries = {}
+            self.retired_topologies = set()
         self._publish_gate()
         self.complete_pub.publish(Bool(data=False))
         self._publish_status()
@@ -906,6 +1168,15 @@ class CoverageExplorer:
                 rospy.loginfo("Camera reviewed lidar sphere hypothesis %s", item["id"])
 
     def _plan_guarded(self, event):
+        # Plan-cycle cost is reported in the status so "it looks stuck while it
+        # computes" can be answered with a number instead of an inference: the
+        # whole cycle benchmarks at tens of milliseconds (128 camera candidates
+        # x 600-point paths = 23 ms on a 600x800 map), while the simulator runs
+        # at RTF ~0.11, so one simulated second costs about nine wall seconds.
+        started = time.time()
+        watchdog = self.plan_watchdog_seconds
+        if watchdog > 0.0:
+            faulthandler.dump_traceback_later(watchdog, exit=False)
         try:
             self._plan(event)
         except Exception as error:  # keep the rospy.Timer thread alive
@@ -916,6 +1187,11 @@ class CoverageExplorer:
             rospy.logerr("coverage planning cycle failed:\n%s", traceback.format_exc())
             self._stop()
             self._publish_status()
+        finally:
+            if watchdog > 0.0:
+                faulthandler.cancel_dump_traceback_later()
+            with self.lock:
+                self.last_plan_ms = (time.time() - started) * 1000.0
 
     def _detect_elevator_portal(self, grid, gate_source, gate_world):
         """Cache a lobby-side wide opening without entering room scheduling."""
@@ -958,6 +1234,21 @@ class CoverageExplorer:
         )
 
     def _plan(self, _event):
+        # Same guard as the control loop: a raising rospy.Timer callback kills
+        # its thread for good.  run57 stopped logging and commanding at
+        # sim 219 with an active target and cmd_vel exactly (0, 0) for the rest
+        # of the run, which is the signature of a dead planning thread.
+        try:
+            self._plan_impl(_event)
+        except Exception:  # noqa: BLE001 - a plan fault must not be fatal
+            self.plan_faults += 1
+            rospy.logerr(
+                "PLAN_FAULT #%d (planning loop kept alive):\n%s",
+                int(self.plan_faults),
+                traceback.format_exc(),
+            )
+
+    def _plan_impl(self, _event):
         with self.lock:
             if self.floor_complete:
                 return
@@ -1014,8 +1305,29 @@ class CoverageExplorer:
                 if int(count) >= self.portal_confirm_cycles
             )
         if grid is None or pose is None or world_pose is None:
+            # This return used to be completely silent: no log line and no status
+            # publish, so the whole node looked hung while it was simply missing
+            # an input.  run152 spent 74.3 s + 61.3 s of standstill here (31.9 %
+            # of the run was zero-command time, and the floor-completion latch
+            # with it), and the only way to see it afterwards was that
+            # ``plan_cycles`` and ``last_plan_ms`` (0.05 ms) stopped advancing.
+            # Name the missing input instead, and keep the status topic alive.
+            self.plan_input_gaps += 1
+            rospy.logwarn_throttle(
+                5.0,
+                "Planning paused (%d): missing input grid=%s pose=%s "
+                "world_pose=%s; the robot stands until it returns",
+                int(self.plan_input_gaps),
+                grid is not None,
+                pose is not None,
+                world_pose is not None,
+            )
+            self._publish_status()
             return
         if gate_source is None:
+            if self._adopt_provisional_gate():
+                self._publish_status()
+                return
             self._publish_status()
             return
         camera_seen = self._camera_seen_grid(grid, pose, world_pose, points)
@@ -1039,22 +1351,45 @@ class CoverageExplorer:
             completed_topologies=completed_topologies,
             confirmed_topologies=confirmed_topologies,
             remembered_portals=tuple(self.topology_portals.values()),
-            rear_rooms_unlocked=self.rear_rooms_unlocked,
             front_station_along_hint=self.front_station_along,
             completed_front_sides=tuple(self.completed_front_sides),
             portal_prefix=self.floor_prefix,
             force_laser_unknown=self.floor_laser_isolated,
             portal_grid=self.raw_grid,
             danger_guidance_level=self.danger_guidance_level,
+            interior_only=self._interior_targets_only_locked(),
         )
         with self.lock:
             seen_portal_ids = set()
             for portal in plan.observed_portals:
-                seen_portal_ids.add(portal.topology_id)
-                self.portal_evidence[portal.topology_id] = int(
-                    self.portal_evidence.get(portal.topology_id, 0)
+                remembered = None
+                if str(portal.topology_id) not in self.topology_portals:
+                    remembered = next(
+                        (
+                            item
+                            for item in self.topology_portals.values()
+                            if doorways_match(
+                                item, portal, self.doorway_merge_tolerance
+                            )
+                        ),
+                        None,
+                    )
+                if remembered is not None:
+                    # Live geometry wins; the remembered id keeps the room state,
+                    # coverage denominator and entry bookkeeping.  This is the
+                    # "seed + refresh" rule: a seeded upper-floor doorway is
+                    # corrected by this floor's own map instead of being trusted
+                    # verbatim (run80) or rediscovered under a new bin id
+                    # (run126 floor 1: no room target at all).
+                    key = str(remembered.topology_id)
+                    self.topology_portals[key] = replace(portal, topology_id=key)
+                else:
+                    key = str(portal.topology_id)
+                seen_portal_ids.add(key)
+                self.portal_evidence[key] = int(
+                    self.portal_evidence.get(key, 0)
                 ) + 1
-                self.portal_last_seen[portal.topology_id] = rospy.Time.now().to_sec()
+                self.portal_last_seen[key] = rospy.Time.now().to_sec()
             for portal in plan.actionable_portals:
                 self.topology_portals.setdefault(portal.topology_id, portal)
             # Cache only candidates admitted by the planner's current station
@@ -1103,7 +1438,18 @@ class CoverageExplorer:
                     active_path[active_path_index:],
                     0.12 if self.active_target is not None
                     and self.active_target.kind == "RETURN_TO_CORRIDOR" else None,
+                    despeckle=True,
                 )
+            )
+            if target_active and not active_safe:
+                self.unsafe_path_cycles += 1
+            else:
+                self.unsafe_path_cycles = 0
+            unsafe_replan = unsafe_path_replan_needed(
+                target_active,
+                active_safe,
+                self.unsafe_path_cycles,
+                self.unsafe_path_replan_cycles,
             )
             sphere_preemption = bool(
                 self.danger_guidance_level >= 3
@@ -1115,14 +1461,7 @@ class CoverageExplorer:
                     or self.active_target.kind != "RETURN_TO_CORRIDOR"
                 )
             )
-            replacement = bool(
-                active_safe
-                and not sphere_preemption
-                and self._should_replace_active(plan.target, now)
-            )
             lifecycle_changed = self._update_topology_lifecycle(plan, target_active)
-            transit_changed = self._update_rear_transit(plan)
-            door_search_changed = self._update_door_search(plan, target_active)
             self._check_completion()
             if self.floor_complete:
                 self._publish_status()
@@ -1139,7 +1478,26 @@ class CoverageExplorer:
                 self._publish_coverage_layers()
                 self._publish_status()
                 return
-            if lifecycle_changed or transit_changed or door_search_changed:
+            if (
+                plan.target is None
+                and not target_active
+                and not lifecycle_changed
+                and self.topology_lock is not None
+                and not self.floor_complete
+            ):
+                if self._recover_idle_lock(plan):
+                    self._publish_path()
+                    self._publish_markers()
+                    self._publish_coverage_layers()
+                    self._publish_status()
+                    return
+            if lifecycle_changed and plan.target is None:
+                # Lifecycle bookkeeping alone must not suppress a dispatchable
+                # target.  Returning unconditionally here left the robot with
+                # plan_reason=TARGET but active_target=None for tens of seconds
+                # (run138 floor 0: CAMERA_FRONTIER/ROOM_R_15 produced every
+                # cycle, never adopted, control stopped, target dropped by the
+                # backstop, repeat).
                 self._publish_path()
                 self._publish_markers()
                 self._publish_coverage_layers()
@@ -1163,41 +1521,115 @@ class CoverageExplorer:
                 self._publish_coverage_layers()
                 self._publish_status()
                 return
-            if active_safe and not sphere_preemption and not replacement:
+            if (
+                (active_safe or (target_active and not unsafe_replan))
+                and not sphere_preemption
+            ):
+                if self._switch_active_target(plan):
+                    self._publish_path()
+                    self._publish_markers()
+                    self._publish_coverage_layers()
+                    self._publish_status()
+                    return
+                self._refresh_active_heading(plan)
                 self._publish_markers()
                 self._publish_coverage_layers()
                 self._publish_status()
                 return
+            if unsafe_replan and self.active_target is not None:
+                # An unsafe path is a ROUTING problem, not a bad target.  Refresh
+                # the route to the SAME target instead of switching away from it:
+                # switching (with a 45 s cool-down on the abandoned target) made
+                # the explorer alternate between a corridor and a room target for
+                # a full hour - 15:07 to 16:10 in the run73 logs - because every
+                # new target reset the debounce counter.
+                goal_key = (
+                    round(float(self.active_target.target[0]), 2),
+                    round(float(self.active_target.target[1]), 2),
+                )
+                refreshes = int(self.route_refresh_counts.get(goal_key, 0))
+                if refreshes < self.max_route_refreshes:
+                    self.route_refresh_counts[goal_key] = refreshes + 1
+                    self.route_refreshes += 1
+                    with self.lock:
+                        self.active_path = ()
+                        self.path_index = 0
+                        self.last_plan_time = rospy.Time(0)
+                    self.unsafe_path_cycles = 0
+                    rospy.logwarn(
+                        "Unsafe path for %s/%s after %d cycles; refreshing the "
+                        "route to the same target (%d/%d, route_refreshes=%d)",
+                        self.active_target.kind,
+                        self.active_target.topology_id,
+                        int(self.unsafe_path_cycles),
+                        refreshes + 1,
+                        int(self.max_route_refreshes),
+                        int(self.route_refreshes),
+                    )
+                    self._publish_path()
+                    self._publish_markers()
+                    self._publish_coverage_layers()
+                    self._publish_status()
+                    return
+                # Bounded: only after repeated failed refreshes is the target
+                # itself treated as bad (the pre-existing drop-and-cool path).
+                with self.lock:
+                    self.blocked_targets.append(
+                        (
+                            float(self.active_target.target[0]),
+                            float(self.active_target.target[1]),
+                            rospy.Time.now().to_sec() + self.unsafe_path_block_seconds,
+                        )
+                    )
+                self.unsafe_path_replans += 1
+                rospy.logwarn(
+                    "Target %s/%s dropped after %d route refreshes "
+                    "(unsafe_path_replans=%d, blocked for %.0fs)",
+                    self.active_target.kind,
+                    self.active_target.topology_id,
+                    refreshes,
+                    int(self.unsafe_path_replans),
+                    self.unsafe_path_block_seconds,
+                )
+            self.unsafe_path_cycles = 0
             self.active_target = None
             self.active_path = ()
             self.path_index = 0
             if plan.target is not None:
                 self.active_target = plan.target
-                self.active_path = plan.target.path or (plan.target.target,)
-                self.path_index = min(1, len(self.active_path) - 1)
+                self.active_path = self._anchor_path_to_current_pose(
+                    plan.target.path or (plan.target.target,), plan.target
+                )
+                self.path_index = (
+                    min(1, len(self.active_path) - 1) if self.active_path else 0
+                )
+                self._note_path_start()
                 self.review_hold_since = None
-                self.active_target_started = rospy.Time.from_sec(now)
+                # A fresh target gets a fresh alignment budget (fields are
+                # owned by the control timer, hence set directly here).
+                self.align_since = None
+                self.align_best_error = math.pi
+                # Keep-fix: stamp the adoption with the CURRENT time, not the
+                # ``now`` captured before planner.plan() ran.  A plan cycle has
+                # been measured at 6.3 s (and 137 s in the worst case), so a
+                # backdated stamp made a brand-new target look as if it had
+                # already produced no displacement for the whole planning
+                # latency, and the liveness backstop dropped it 0.13 s after it
+                # was chosen (run147: LASER_FRONTIER/ROOM_L_35 adopted at
+                # 00:52:38,653, dropped at 00:52:38,785 "after 6.3s").
+                adoption_stamp = rospy.Time.now()
+                self.active_target_started = adoption_stamp
                 self.active_target_last_progress = self.path_index
-                self.active_target_last_progress_stamp = rospy.Time.from_sec(now)
+                self.active_target_last_progress_stamp = adoption_stamp
                 self.active_target_last_distance = None
                 if (
                     plan.target.topology_id != "CORRIDOR"
                     and "UNASSIGNED" not in plan.target.topology_id
+                    and plan.target.topology_id not in self.retired_topologies
                 ):
-                    self.topology_lock = plan.target.topology_id
-                    self.topology_region = "ROOM_APPROACHING"
-                    state = self.topology_states.setdefault(
-                        plan.target.topology_id,
-                        {"state": "APPROACHING", "targets": 0},
-                    )
-                    # A new frontier in the same locked room is not a new
-                    # doorway approach.  Preserve geometric proof that the
-                    # robot has already crossed into the room; otherwise the
-                    # completion/return branch can never run once the robot
-                    # has moved away from the doorway.
-                    state["state"] = topology_state_for_new_target(
-                        state.get("state")
-                    )
+                    # Same helper the mid-route handover uses, so both adoption
+                    # paths arm the room lock identically.
+                    self._arm_room_approach(plan.target.topology_id)
                 rospy.loginfo(
                     "COVERAGE target kind=%s topology=%s path=%.2f laser_gain=%.2f camera_gain=%.2f combined_gain=%.2f%s",
                     plan.target.kind,
@@ -1206,68 +1638,58 @@ class CoverageExplorer:
                     plan.target.laser_gain,
                     plan.target.camera_gain,
                     plan.target.combined_gain,
-                    " (replaced)" if replacement else "",
+                    "",
                 )
             self._publish_path()
             self._publish_markers()
             self._publish_coverage_layers()
             self._publish_status()
 
-    def _should_replace_active(self, candidate, now):
-        """Apply target-switch hysteresis while a route is still safe.
+    def _align_stalled(self, error_magnitude):
+        """True once an alignment has outlasted its budget without improving.
 
-        Map updates are frequent and can create a slightly nearer version of
-        the same frontier.  Such updates must not cause oscillation.  A switch
-        is allowed only after a minimum age, for a genuinely different target,
-        and either a substantial information-gain advantage or a stalled
-        route.  Sphere review remains handled by the separate preemption rule.
+        A bearing that keeps flipping direction never satisfies the
+        rotate-in-place test, so this is what stops it pinning the robot: the
+        clock restarts every time a *new best* error is seen, so a monotonic
+        approach is never cut short.  Deliberately lock-free; only the control
+        timer touches these fields.
         """
-        if candidate is None or self.active_target is None:
-            return False
-        active = self.active_target
-        lock_state = None
-        if self.topology_lock is not None:
-            lock_state = self.topology_states.get(self.topology_lock, {}).get("state")
-        if not target_kind_allowed_for_topology_state(
-            lock_state, getattr(candidate, "kind", None)
-        ):
-            return False
-        if active.kind == "RETURN_TO_CORRIDOR":
-            return False
-        if self.topology_lock is not None:
-            state = self.topology_states.get(self.topology_lock, {}).get("state")
-            # Keep the originally collision-checked entry manoeuvre intact.
-            # Replacing a room frontier before doorway crossing rebuilds the
-            # staged path from the corridor centre and can pull a robot that
-            # is already in the doorway back out again.
-            if state == "APPROACHING":
-                return False
-        if candidate.kind == "SPHERE_REVIEW" or active.kind == "SPHERE_REVIEW":
-            return False
-        if candidate.topology_id != active.topology_id:
-            # A room lock is intentionally a hard boundary once a room has
-            # been selected.  Before a lock is established, a clearly better
-            # room may still replace a corridor frontier.
-            if self.topology_lock is not None:
-                return False
-        separation = math.hypot(
-            candidate.target[0] - active.target[0],
-            candidate.target[1] - active.target[1],
+        now = rospy.Time.now()
+        if self.align_since is None or error_magnitude < self.align_best_error:
+            self.align_since = now
+            self.align_best_error = error_magnitude
+        age = (now - self.align_since).to_sec()
+        return (
+            age >= self.max_align_seconds
+            and error_magnitude > self.align_progress_error
         )
-        if separation < max(0.8, 0.8 * self.planner.revisit_radius):
-            return False
-        age = float(now) - self.active_target_started.to_sec()
-        if age < self.target_replace_min_age:
-            return False
-        progress_age = float(now) - self.active_target_last_progress_stamp.to_sec()
-        gain_better = candidate.combined_gain >= max(
-            1e-6, active.combined_gain * self.target_replace_gain_ratio
+
+    def _clear_align_stall(self):
+        self.align_since = None
+        self.align_best_error = math.pi
+
+    def _region_of_pose(self):
+        """Region membership of the robot's own pose: corridor / room / unknown.
+
+        One truth shared with the coverage denominator (``topology_region_mask``
+        builds the same Voronoi bands).  Entry is "the pose is inside this room's
+        region" and exit is "the pose is back in the corridor" - a state, so no
+        replan can lose it, and no door identity, evidence count or wall-offset
+        proxy is involved for rooms.  Returns ``None`` while the portal set is
+        still unknown, in which case the caller keeps its geometric fallback.
+        """
+        if self.pose is None or self.gate_source is None:
+            return None
+        portals = list(self.topology_portals.values())
+        if not portals:
+            return None
+        return region_of_point(
+            self.pose,
+            self.gate_source,
+            self.gate_source[2],
+            self.planner.corridor_half_width,
+            portals,
         )
-        stalled = progress_age >= self.target_replace_stall
-        if not (gain_better or stalled):
-            return False
-        self.target_replacements += 1
-        return True
 
     def _topology_coordinates(self):
         if self.pose is None or self.gate_source is None:
@@ -1323,10 +1745,17 @@ class CoverageExplorer:
         )
         path, path_length, minimum = (), 0.0, 0.0
         # The online portal centre can drift by a few map cells after the robot
-        # has scanned the room.  Search only inside the cached doorway width,
-        # keeping the crossing normal and clearance unchanged.  This remains a
-        # return through the confirmed door, not a generic wall-gap fallback.
-        for along_offset in portal_return_along_offsets(portal.width):
+        # has scanned the room, and the drift can exceed the cached doorway
+        # width: run51 finished ROOM_R_38's coverage and then sat in the room
+        # because "return-to-corridor path is unavailable".  Search the cached
+        # doorway first and widen only when that fails, exactly like the outward
+        # crossing.  This remains a return through the confirmed door, not a
+        # generic wall-gap fallback.
+        for along_offset in door_crossing_along_offsets(
+            portal.width,
+            self.planner.door_crossing_wide_search,
+            self.planner.door_crossing_scan_step,
+        ):
             shifted_along = float(portal.along) + along_offset
             shifted_corridor = self.planner._portal_waypoint(
                 self.gate_source[:2], self.gate_source[2], shifted_along, 0.0
@@ -1369,6 +1798,7 @@ class CoverageExplorer:
         self.active_target = target
         self.active_path = target.path
         self.path_index = min(1, len(self.active_path) - 1)
+        self._note_path_start()
         self.active_target_started = now
         self.active_target_last_progress = self.path_index
         self.active_target_last_progress_stamp = now
@@ -1421,6 +1851,12 @@ class CoverageExplorer:
             state["state"] = "APPROACHING"
 
         local = (plan.topology_coverages or {}).get(lock)
+        # ``candidate_topologies`` describes the global pool before the room
+        # lock is applied.  Use the filtered list here: a different room being
+        # available must not keep an exhausted locked room alive forever.
+        has_room_candidates = any(
+            item.topology_id == lock for item in plan.targets
+        )
         # A room whose red sphere is already confirmed has met the task
         # objective; from `danger_early_exit_coverage` upward it may finish
         # before the full area target.  0.0 keeps the validated 0.84-only gate.
@@ -1431,7 +1867,7 @@ class CoverageExplorer:
             and local.combined >= self.danger_early_exit_coverage
             and self._danger_confirmed_in_topology(plan, lock)
         )
-        local_coverage_ok = bool(
+        coverage_ok = bool(
             state.get("state") == "EXPLORING"
             and local is not None
             and (
@@ -1439,6 +1875,61 @@ class CoverageExplorer:
                 or danger_exit
             )
         )
+        # Only start the grace clock once the target is actually met, and reset
+        # it if coverage drops back below (the map can still grow).
+        now_seconds = rospy.Time.now().to_sec()
+        if coverage_ok:
+            if state.get("coverage_met_since") is None:
+                state["coverage_met_since"] = now_seconds
+        else:
+            state["coverage_met_since"] = None
+        met_for = (
+            now_seconds - float(state.get("coverage_met_since") or now_seconds)
+            if coverage_ok
+            else 0.0
+        )
+        # Target met AND nothing worth doing left in this room.  "Worth" is a
+        # gain threshold, not merely "a candidate exists": with the target met
+        # at, say, 0.55 while the room is already at 0.96, the survivors are
+        # marginal wall pockets whose local gain is a fraction of a square
+        # metre, and chasing them looked exactly like exploring the whole floor
+        # for its own sake.  A large unseen pocket still produces a large local
+        # gain, so the earlier fix (never abandon a big unseen area) is kept.
+        # The time grace stays as a backstop for a high-gain candidate that can
+        # never be cleared.
+        best_room_gain = max(
+            (
+                float(item.combined_gain)
+                for item in plan.targets
+                if item.topology_id == lock
+            ),
+            default=0.0,
+        )
+        significant_candidate = bool(
+            self.room_exit_requires_gain
+            and best_room_gain >= self.room_exhaust_min_gain
+        )
+        local_coverage_ok = bool(
+            coverage_ok
+            and (
+                not significant_candidate
+                or met_for >= self.room_exhaust_grace_seconds
+            )
+        )
+        if coverage_ok and significant_candidate:
+            rospy.loginfo_throttle(
+                10.0,
+                "Room %s at combined=%.3f (target %.3f) but a candidate of "
+                "gain %.2f m2 (>= %.2f) is still worth visiting; staying "
+                "(%.0fs/%.0fs)",
+                lock,
+                local.combined if local is not None else float("nan"),
+                self.room_combined_coverage_target,
+                best_room_gain,
+                self.room_exhaust_min_gain,
+                met_for,
+                self.room_exhaust_grace_seconds,
+            )
         if danger_exit and local.combined < self.room_combined_coverage_target:
             rospy.loginfo(
                 "Room %s finishes early at combined=%.3f (threshold %.3f): "
@@ -1450,8 +1941,14 @@ class CoverageExplorer:
             self.topology_region = "ROOM_RETURNING"
             if self._start_corridor_return(plan, lock):
                 rospy.loginfo(
-                    "Topology room %s coverage complete; returning to CORRIDOR before next room",
+                    "Topology room %s coverage complete at combined=%.3f "
+                    "(target %.3f, task_cells=%d, best_remaining_gain=%.2f); "
+                    "returning to CORRIDOR before next room",
                     lock,
+                    local.combined,
+                    self.room_combined_coverage_target,
+                    int(local.task_cells),
+                    best_room_gain,
                 )
                 return True
             rospy.logwarn_throttle(
@@ -1464,9 +1961,7 @@ class CoverageExplorer:
         # ``candidate_topologies`` describes the global pool before the room
         # lock is applied.  Use the filtered list here: a different room being
         # available must not keep an exhausted locked room alive forever.
-        has_room_candidates = any(
-            item.topology_id == lock for item in plan.targets
-        )
+        # (has_room_candidates is computed with the coverage check above.)
         if target_active or has_room_candidates:
             self.topology_miss_cycles[lock] = 0
             return
@@ -1579,15 +2074,36 @@ class CoverageExplorer:
         side = None
         wall = None
         longitudinal_ok = True
-        if portal is None:
-            # The planner can lock a room whose freshly detected id has no
-            # cached portal entry (an upper floor re-bins the same doorway, so
-            # ROOM_R_17 appears beside the reused ROOM_R_16/ROOM_R_15).  Without
-            # this fallback the entry proof could never become true and the
-            # approach was condemned to fail after its miss budget: observed on
-            # every second-floor room in a three-floor run, leaving the floor
-            # unfinished.  The wall offset is still measured from the live map
-            # in detect_room_portals, so the side test keeps the same geometry.
+        crossing_ok = None
+        if portal is not None and self.gate_source is not None:
+            # Door-opening sanity: the robot must be at this opening, not
+            # somewhere else along the same wall.
+            longitudinal_ok = abs(along - portal.along) <= max(
+                1.0, 0.5 * float(portal.width) + 0.45
+            )
+            # Entry is a STATE, not an event: the robot's own pose is on the
+            # room side of the door plane.  The plan-progress test that used to
+            # live here (``path_index`` past the first in-room waypoint) was an
+            # event derived from a path that is rebuilt every ``replan_period``
+            # and resets ``path_index``, so it could be reset before it ever
+            # fired - run78 sat on the door line with ``room_entry_counts``
+            # still empty.  This is also the simple form of the room-region
+            # membership test that replaces the whole door-proof machinery.
+            # Entry is a STATE: the robot's own pose is inside this room's
+            # region.  Membership is the single truth shared with the coverage
+            # denominator; the door-plane test stays only as the fallback used
+            # while the portal set is still unknown.
+            region = self._region_of_pose()
+            if region is not None:
+                crossing_ok = str(region) == str(lock)
+            else:
+                sign = 1.0 if str(portal.side).upper().startswith("L") else -1.0
+                crossing_ok = sign * (lateral - float(portal.lateral)) > 0.0
+        if crossing_ok is None:
+            # No cached portal for this id (an upper floor re-bins a reused
+            # doorway as a fresh ROOM_*_NN).  The map-measured wall offset is the
+            # only evidence available then, and refusing entry here would leave
+            # such a floor unfinished, so keep it as a fallback only.
             side = "L" if lateral > 0.0 else "R"
             left_wall, right_wall = measure_corridor_walls(
                 self.raw_grid,
@@ -1597,25 +2113,10 @@ class CoverageExplorer:
             ) if self.raw_grid is not None and self.gate_source is not None else (None, None)
             measured = left_wall if side == "L" else right_wall
             wall = float(measured) if measured else float(self.planner.corridor_half_width)
-        else:
-            side = portal.side
-            longitudinal_ok = abs(along - portal.along) <= max(
-                1.0, 0.5 * float(portal.width) + 0.45
+            crossing_ok = (
+                lateral > wall + 0.05 if side == "L" else lateral < -wall - 0.05
             )
-            # The doorway carries the wall offset the raw map actually showed.
-            # Reverting to the configured half width here reintroduces the
-            # gate-axis bias the detector no longer has: an off-centre axis made
-            # a robot that was already inside the room fail the side test, so it
-            # had to drive back to the axis and re-enter.
-            wall = (
-                float(getattr(portal, "measured_wall", 0.0))
-                or abs(float(portal.lateral))
-                or float(self.planner.corridor_half_width)
-            )
-        side_ok = (
-            lateral > wall + 0.05 if side == "L" else lateral < -wall - 0.05
-        )
-        if not (longitudinal_ok and side_ok):
+        if not (longitudinal_ok and crossing_ok):
             return False
         state["state"] = "EXPLORING"
         self.topology_region = "ROOM_EXPLORING"
@@ -1637,7 +2138,72 @@ class CoverageExplorer:
             )
             self.room_scope_announced = str(lock)
         rospy.loginfo("Topology room %s doorway crossing confirmed", lock)
+        # Count every physical crossing so "entered, came back out, went in
+        # again" is measurable rather than a matter of watching RViz.
+        self.room_entry_counts[str(lock)] = (
+            self.room_entry_counts.get(str(lock), 0) + 1
+        )
+        # A fresh entry gets a fresh interior budget.
+        self.room_interior_retries[str(lock)] = 0
+        # T-E: keep the ordered run-level history, not just the per-floor total.
+        # ``room_entry_counts`` is reset on every floor change, so "entered room
+        # X, left, re-entered later" was only visible as a warn line at the
+        # moment it happened, if the 120 s sampler caught it at all.
+        self.room_entry_sequence.append(
+            [
+                round(rospy.Time.now().to_sec(), 3),
+                int(self.floor_index),
+                str(lock),
+                int(self.room_entry_counts[str(lock)]),
+            ]
+        )
+        if self.room_entry_counts[str(lock)] > 1:
+            rospy.logwarn(
+                "Room %s entered %d times; a retired room must never be "
+                "re-entered (retired=%s)",
+                lock,
+                self.room_entry_counts[str(lock)],
+                sorted(self.retired_topologies),
+            )
         return True
+
+    def _end_pose_clearance(self):
+        """Clearance at the robot's own cell on the map the elevator plans on.
+
+        The transition node plans with ``navigation_clearance`` on the
+        despeckled navigation map, so the end-of-floor pose has to be judged on
+        exactly that map; anything else would let a floor latch at a pose where
+        the very next A* call returns no route at all.  Cached briefly because
+        the underlying distance transform is not cheap and the status payload
+        also reports it.
+        """
+        grid = self.navigation_grid if self.navigation_grid is not None else self.grid
+        if grid is None or self.pose is None:
+            return None
+        cell = grid.world_to_cell(float(self.pose[0]), float(self.pose[1]))
+        now = rospy.Time.now().to_sec()
+        cached = self._end_pose_clearance_cache
+        if cached is not None and cached[0] == cell and now - cached[1] <= 1.0:
+            return cached[2]
+        try:
+            _safe, clearance = self.planner._navigation_fields(
+                grid, None, despeckle=True
+            )
+        except Exception:
+            return None
+        if not self.planner._in_bounds(clearance.shape, *cell):
+            return None
+        value = float(clearance[cell])
+        self._end_pose_clearance_cache = (cell, now, value)
+        return value
+
+    def _end_pose_is_navigable(self):
+        clearance = self._end_pose_clearance()
+        if clearance is None:
+            # Never invent a new blocking condition when the map is not
+            # available; the transition has its own bounded recovery.
+            return True
+        return clearance >= self.planner.navigation_clearance
 
     def _finish_corridor_return_locked(self):
         """Finish one room and keep its station locked until its opposite."""
@@ -1647,16 +2213,56 @@ class CoverageExplorer:
         state = self.topology_states.get(lock, {})
         if state.get("state") != "RETURNING":
             return False
-        _along, lateral = self._topology_coordinates()
-        if (
-            lateral is None
-            or abs(lateral) > self.planner.corridor_half_width - 0.10
-        ):
+        region = self._region_of_pose()
+        if region is not None:
+            # Exit is the same membership test from the other side: the pose is
+            # back in the corridor region.
+            if str(region) != "CORRIDOR":
+                return False
+        else:
+            _along, lateral = self._topology_coordinates()
+            if lateral is None or abs(lateral) > self.floor_end_corridor_tolerance:
+                return False
+        if not self._end_pose_is_navigable():
+            rospy.logwarn_throttle(
+                5.0,
+                "Room %s reached the corridor centreline but the robot cell is "
+                "not navigable (clearance %.2f < %.2f); holding the return so a "
+                "floor cannot latch inside a doorway",
+                lock,
+                self._end_pose_clearance() or float("nan"),
+                self.planner.navigation_clearance,
+            )
             return False
         state["state"] = "COMPLETE"
         self.completed_topologies.add(lock)
+        # Retire the room for the rest of the run: it has been entered, worked
+        # and left, so no future cycle may dispatch a doorway crossing into it
+        # again.  This is what makes the observed "in through the door, back to
+        # the corridor, in through the door again" structurally impossible.
+        self.retired_topologies.add(str(lock))
         if lock in self.front_station_topologies:
             self.completed_front_sides.add(lock.split("_")[-2])
+        else:
+            # The lock id can differ from the front station id for the very same
+            # physical doorway: run46 floor 2 explored and completed the front
+            # pair as ROOM_L_10/ROOM_R_10 while the station identity had drifted
+            # to ROOM_L_15/ROOM_R_15, so this side was never recorded and the
+            # FRONT door search could not advance to REAR.  Match the doorway,
+            # not the transient label.
+            lock_portal = self.topology_portals.get(str(lock))
+            if lock_portal is not None:
+                for front_id in sorted(self.front_station_topologies):
+                    front_portal = self.topology_portals.get(str(front_id))
+                    if front_portal is None:
+                        continue
+                    if doorways_match(
+                        lock_portal,
+                        front_portal,
+                        self.front_station_match_tolerance,
+                    ):
+                        self.completed_front_sides.add(str(front_portal.side))
+                        break
         self.returning_topology = None
         self.active_target = None
         self.active_path = ()
@@ -1693,120 +2299,111 @@ class CoverageExplorer:
         )
         return True
 
-    def _update_rear_transit(self, plan):
-        """Legacy fixed-distance transit is superseded by corridor frontiers.
+    def _interior_targets_only_locked(self):
+        """Whether the robot is inside a locked room and must stay targeting it.
 
-        The corridor is one unrestricted topology.  Its lidar frontier goals
-        naturally move the robot toward the rear structure, while selecting a
-        goal across a confirmed narrow passage establishes the room lock.
-        Keeping the old 12 m open-loop segment would seize control from that
-        planner and duplicate the same transition with less map awareness.
+        Free re-orientation inside is allowed; moving the target back out into
+        the corridor is not, until the interior has failed
+        ``interior_retry_limit`` times - a bounded escape, so a room with no
+        candidate still cannot deadlock.
         """
-        return False
+        with self.lock:
+            lock = self.topology_lock
+            if lock is None:
+                return False
+            inside = (
+                int(self.room_entry_counts.get(str(lock), 0)) > 0
+                and self.returning_topology is None
+            )
+            retries = int(self.room_interior_retries.get(str(lock), 0))
+            limit = int(self.interior_retry_limit)
+        return interior_targets_only(inside, retries, limit)
 
-    def _update_door_search(self, plan, target_active):
-        """Start/cancel a bounded one-metre corridor scan segment.
+    def _recover_idle_lock(self, plan):
+        """Do something useful when a locked room has no candidate at all.
 
-        A visible but not-yet-confirmed portal always wins: the robot remains
-        stopped so its evidence can reach ``portal_confirm_cycles``.  Motion is
-        used only after repeated completely empty portal scans.
+        The planner can legitimately produce nothing for a locked room - its
+        interior is still unknown, so there is no frontier and no camera
+        viewpoint to seed from.  run55 floor 0 locked ROOM_R_3 in exactly that
+        state, produced ``target=None`` and stood 1 m from the door until the
+        position watchdog killed the run.
+
+        Recovery is bounded and in this order:
+
+        1. already inside the room -> drive the verified return-to-corridor path
+           (the room keeps its lock and stays unfinished, so it can be finished
+           from the corridor side later);
+        2. not inside yet -> release the lock so the corridor assignment can work
+           the rest of the zone and re-open this room on a later cycle;
+        3. after ``max_lock_releases`` -> park the doorway as BLOCKED so the
+           corridor cannot keep re-locking a room it cannot reach.
         """
-        if not self.door_search_enabled:
-            self.door_search_active = False
-            self.door_search_sweep_phase = None
-            return False
-        if (
-            self.topology_lock is not None
-            or self.rear_transit_active
-            or target_active
-            or plan.target is not None
-            or plan.actionable_portals
-        ):
-            changed = self.door_search_active
-            self.door_search_active = False
-            self.door_search_step_start_along = None
-            self.door_search_idle_cycles = 0
-            return changed
-
-        # After returning from one front room, continue the bounded corridor
-        # probe so the opposite door can be observed and admitted.  The probe
-        # is still limited to the existing front search window; rear transit
-        # remains locked until both front sides are complete.
-        phase = "REAR" if self.rear_rooms_unlocked else "FRONT"
-
-        # Once one room at a front station is complete, the opposite doorway
-        # is directly ahead of the returned robot.  The planner now creates a
-        # same-station mirrored portal and validates it with A*/local
-        # avoidance; a three-segment search would only delay that dispatch.
-        if phase == "FRONT" and self.front_station_along is not None and self.completed_front_sides:
-            self.door_search_active = False
-            self.door_search_step_start_along = None
-            self.door_search_idle_cycles = 0
-            self.door_search_sweep_phase = None
-            self.topology_region = "FRONT_DIRECT_OPPOSITE"
-            return False
-
-        along, lateral = self._topology_coordinates()
-        if along is None or lateral is None:
-            return False
-        if abs(lateral) > self.planner.corridor_half_width:
-            return False
-
-        if phase != self.door_search_phase:
-            self.door_search_phase = phase
-            self.door_search_travel = 0.0
-            self.door_search_idle_cycles = 0
-            self.door_search_active = False
-            self.door_search_step_start_along = None
-
-        # Do not move while a geometrically valid portal is accumulating its
-        # temporal confirmation count.
-        if plan.observed_portals and plan.actionable_portals:
-            changed = self.door_search_active
-            self.door_search_active = False
-            self.door_search_step_start_along = None
-            self.door_search_idle_cycles = 0
-            self.topology_region = "{}_DOOR_CONFIRM".format(phase)
-            return changed
-
-        # A geometric observation that is outside the current assignment
-        # band is not a reason to stop.  Keep the bounded search moving until
-        # the confirmed portal is actually admitted as an executable target.
-
-        limit = (
-            self.door_search_rear_limit
-            if phase == "REAR"
-            else self.door_search_front_limit
+        lock = str(self.topology_lock)
+        entered = int(self.room_entry_counts.get(lock, 0))
+        if entered > 0:
+            self.room_interior_retries[lock] = int(
+                self.room_interior_retries.get(lock, 0)
+            ) + 1
+            # The corridor return is only finished by
+            # _finish_corridor_return_locked, which requires
+            # state == "RETURNING".  Without this assignment the return never
+            # terminates, returning_topology stays set forever, and
+            # _interior_targets_only_locked() reports inside=False for the rest
+            # of the mission - which re-opens corridor targets while the robot
+            # is still inside the room (the enter -> leave -> re-enter shuttle).
+            self.topology_states.setdefault(
+                lock, {"state": "APPROACHING", "targets": 0}
+            )["state"] = "RETURNING"
+            self.topology_region = "ROOM_RETURNING"
+        if entered > 0 and self._start_corridor_return(plan, self.topology_lock):
+            rospy.loginfo(
+                "Locked room %s produced no candidate; returning to corridor "
+                "(entries=%d)",
+                lock,
+                entered,
+            )
+            return True
+        releases = int(self.lock_release_counts.get(lock, 0))
+        if releases < self.max_lock_releases:
+            self.lock_release_counts[lock] = releases + 1
+            # A released room must not keep a state that claims it is already
+            # being explored: the next lock inherits EXPLORING, which skips the
+            # entry proof entirely (no crossing count, no EXPLORING transition)
+            # and lets the robot cross the doorway unrecorded.  Reset to
+            # APPROACHING so the next attempt re-proves entry.
+            self.topology_states.setdefault(
+                lock, {"state": "APPROACHING", "targets": 0}
+            )["state"] = "APPROACHING"
+            self.topology_lock = None
+            self.topology_region = "CORRIDOR"
+            self.active_target = None
+            self.active_path = ()
+            self.path_index = 0
+            self.last_plan_time = rospy.Time(0)
+            rospy.logwarn(
+                "Locked room %s produced no candidate (entries=%d); releasing "
+                "the lock so the zone can continue (%d/%d)",
+                lock,
+                entered,
+                releases + 1,
+                self.max_lock_releases,
+            )
+            return True
+        state = self.topology_states.setdefault(
+            lock, {"state": "APPROACHING", "targets": 0}
         )
-        if self.door_search_active:
-            return False
-        if self.door_search_travel >= limit - 1e-6:
-            if self.door_search_sweep_phase is None:
-                self.door_search_sweep_phase = "LEFT"
-                self.door_search_active = True
-                self.topology_region = "{}_DOOR_SWEEP_LEFT".format(phase)
-                rospy.loginfo("%s door search complete; starting left 90-degree sweep", phase)
-                return True
-            return False
-        self.door_search_idle_cycles += 1
-        if self.door_search_idle_cycles < self.door_search_wait_cycles:
-            self.topology_region = "{}_DOOR_RESCAN".format(phase)
-            return False
-
-        self.door_search_active = True
-        self.door_search_step_start_along = float(along)
-        self.door_search_idle_cycles = 0
-        self.topology_region = "{}_DOOR_SEARCH_STEP".format(phase)
+        state["state"] = "BLOCKED"
+        self.retired_topologies.add(lock)
+        self.topology_lock = None
+        self.topology_region = "CORRIDOR"
         self.active_target = None
         self.active_path = ()
         self.path_index = 0
-        rospy.loginfo(
-            "%s door not observed; starting bounded %.2f m recognition segment "
-            "(travel %.2f/%.2f m)",
-            phase,
-            min(self.door_search_step_distance, limit - self.door_search_travel),
-            self.door_search_travel,
-            limit,
+        self.last_plan_time = rospy.Time(0)
+        rospy.logwarn(
+            "Parking %s as BLOCKED after %d releases with no candidate",
+            lock,
+            releases,
         )
         return True
 
@@ -1829,6 +2426,11 @@ class CoverageExplorer:
             if state.get("state") != "BLOCKED":
                 continue
             if topology_id in self.completed_topologies:
+                continue
+            if topology_id in self.retired_topologies:
+                # A room retired by _recover_idle_lock was parked on purpose
+                # ("so the corridor cannot keep re-locking a room it cannot
+                # reach"); re-opening it here would contradict that park.
                 continue
             if not str(topology_id).startswith("ROOM"):
                 continue
@@ -1915,7 +2517,55 @@ class CoverageExplorer:
                 self.expected_rooms_per_floor,
             )
 
+    def _check_completion_from_control(self):
+        """Run the floor-completion latch from the CONTROL loop as well.
+
+        ``_check_completion`` used to be called only by the planning callback,
+        and that callback returns immediately (and used to do so silently) when
+        one of its inputs is momentarily missing.  The completion latch - and
+        with it the elevator handover - therefore waited for the planner to come
+        back: run152 stood still for 74.3 s and then another 61.3 s around
+        "Floor completion pending: rooms=4/4 stable 3.0s", even though the
+        predicate was already true and only needs 3 s to be stable.  The control
+        loop is alive throughout, so it latches the floor on its own.
+        """
+        if self.floor_complete:
+            return
+        now = rospy.Time.now()
+        last = self.last_completion_check
+        if last is not None and (now - last).to_sec() < 0.2:
+            return
+        self.last_completion_check = now
+        self._check_completion()
+
     def _control(self, _event):
+        # A raising rospy.Timer callback kills its thread for good.  run44 froze
+        # with cmd_vel == (0, 0) for the rest of the mission because an
+        # UnboundLocalError in the body terminated the control loop; the
+        # traceback only ever reached the supervisor log, so the freeze looked
+        # like a planning stall.  Keep the loop alive and make it observable.
+        try:
+            self._control_impl(_event)
+        except Exception:  # noqa: BLE001 - a control fault must not be fatal
+            self.control_faults += 1
+            rospy.logerr(
+                "CONTROL_FAULT #%d (control loop kept alive):\n%s",
+                int(self.control_faults),
+                traceback.format_exc(),
+            )
+        # Independent of the planning callback, which can be paused on a missing
+        # input (see _check_completion_from_control).
+        try:
+            self._check_completion_from_control()
+        except Exception:  # noqa: BLE001
+            self.control_faults += 1
+            rospy.logerr(
+                "CONTROL_FAULT #%d in the completion latch:\n%s",
+                int(self.control_faults),
+                traceback.format_exc(),
+            )
+
+    def _control_impl(self, _event):
         with self.lock:
             self._mark_room_entered_locked()
             self._finish_corridor_return_locked()
@@ -1941,19 +2591,134 @@ class CoverageExplorer:
         if (rospy.Time.now() - self.last_pose_stamp).to_sec() > 1.0:
             self._stop()
             return
-        if gate is None:
+        if not self.initial_forward_complete:
             self._control_initial_forward(pose, world_pose, front)
             self._publish_status()
             return
-        if self.rear_transit_active:
-            self._control_rear_transit(pose, front)
-            self._publish_status()
+        # Far-zone committed transit takes precedence over target chasing: the
+        # corridor fixed step is a manoeuvre (centre, align, measured run), not a
+        # target point, so a map update cannot re-aim it mid-leg.  Once a leg is
+        # under way its own stored landing is used, so a later plan (a dispatched
+        # target point) cannot interrupt it.
+        committed_along = None
+        with self.lock:
+            if self.committed_transit is not None:
+                committed_along = self.committed_transit.get("target_along")
+        if committed_along is None:
+            committed_along = self._committed_transit_along()
+        if committed_along is not None and self._control_committed_transit(
+            pose, committed_along
+        ):
             return
-        if self.door_search_active:
-            self._control_door_search(pose, front)
-            self._publish_status()
-            return
+        if pose is not None:
+            # Displacement-based progress stamp (see the constructor note).
+            if (
+                self.last_progress_position is None
+                or math.hypot(
+                    float(pose[0]) - self.last_progress_position[0],
+                    float(pose[1]) - self.last_progress_position[1],
+                )
+                >= 0.15
+                or abs(
+                    normalize_angle(float(pose[2]) - self.last_progress_yaw)
+                )
+                >= 0.20
+            ):
+                self.last_progress_position = (float(pose[0]), float(pose[1]))
+                self.last_progress_yaw = float(pose[2])
+                self.last_progress_stamp = rospy.Time.now()
+        # Liveness backstop, deliberately placed BEFORE the path check: an
+        # active target whose path went empty takes the stop-and-return below
+        # and would bypass a backstop placed after it.  run43 stood at the
+        # corridor centreline with a ROOM_L_15 camera frontier, cmd_vel ==
+        # (0, 0) and stuck_target_drops == 0 for 40+ sim seconds for exactly
+        # that reason.  Judged on the node's own ``active_target`` so both the
+        # empty-path and the no-progress cases are covered.
+        if not complete and self.stuck_target_seconds > 0.0 and target is not None:
+            # Idleness is measured from the LATER of the last physical progress
+            # and the moment this target became active.  ``last_progress_stamp``
+            # only advances while the robot actually moves (>=0.15 m / >=0.20
+            # rad), so a target adopted while the robot was still standing still
+            # inherited the PREVIOUS target's idle time and was condemned 0.15 s
+            # after being chosen - before it could possibly have moved.  Dropping
+            # it stopped the robot again, which kept the stamp fresh, so the next
+            # target was condemned the same way: run150 spent 9.55 s + 15.45 s +
+            # 12.25 s of its 22.8 % standstill in exactly this loop (a fresh
+            # target dropped "after 5.4s" 0.15 s after adoption), and run146 /
+            # run147 froze for 43.9 s / 59.1 s the same way.  A freshly adopted
+            # target must always get the full window, while a target that has
+            # genuinely made no progress since it started is still dropped.
+            anchor = self.last_progress_stamp
+            started = self.active_target_started
+            if started is not None and started > anchor:
+                anchor = started
+            idle = (rospy.Time.now() - anchor).to_sec()
+            if idle >= self.stuck_target_seconds:
+                with self.lock:
+                    self.blocked_targets.append(
+                        (
+                            float(target.target[0]),
+                            float(target.target[1]),
+                            rospy.Time.now().to_sec() + self.stuck_target_cooldown,
+                        )
+                    )
+                    self.active_target = None
+                    self.active_path = ()
+                    self.path_index = 0
+                    self.last_plan_time = rospy.Time(0)
+                    self.stuck_target_drops += 1
+                    self.last_motion_command_stamp = rospy.Time.now()
+                    self.last_progress_stamp = rospy.Time.now()
+                rospy.logwarn(
+                    "Dropping stuck target %s/%s after %.1fs with no actual "
+                    "displacement (backstop drops=%d, path_was_empty=%s)",
+                    target.kind,
+                    target.topology_id,
+                    idle,
+                    int(self.stuck_target_drops),
+                    "yes" if not path else "no",
+                )
+                self._stop()
+                return
         if target is None or not path:
+            # An active target with no executable path used to stop silently for
+            # ever: run57 held a CAMERA_FRONTIER/CORRIDOR target with cmd_vel
+            # exactly (0, 0) while the planner still reported one.  Make it
+            # observable and bounded - after a few cycles the target is cleared
+            # so the next plan can offer a routable alternative.
+            if target is not None:  # inside this branch the path is empty
+                self.empty_path_cycles += 1
+                rospy.logwarn_throttle(
+                    5.0,
+                    "Active target %s/%s has no executable path "
+                    "(cycles=%d, backstop drops=%d)",
+                    getattr(target, "kind", "?"),
+                    getattr(target, "topology_id", "?"),
+                    int(self.empty_path_cycles),
+                    int(self.stuck_target_drops),
+                )
+                if self.empty_path_cycles >= 2:
+                    with self.lock:
+                        self.active_target = None
+                        self.active_path = ()
+                        self.path_index = 0
+                        self.last_plan_time = rospy.Time(0)
+                    self.empty_path_cycles = 0
+            else:
+                self.empty_path_cycles = 0
+                plan_target = getattr(self.current_plan, "target", None)
+                rospy.logwarn_throttle(
+                    5.0,
+                    "Control stop: no active target (plan_reason=%s, "
+                    "plan_target=%s/%s, active_path_len=%d, committed=%s, "
+                    "path_index=%s)",
+                    self.last_plan_reason,
+                    getattr(plan_target, "kind", None),
+                    getattr(plan_target, "topology_id", None),
+                    len(path),
+                    self.committed_transit is not None,
+                    path_index,
+                )
             self._stop()
             return
         waypoint = path[path_index]
@@ -1966,6 +2731,25 @@ class CoverageExplorer:
                 self.active_target_last_distance = distance
                 self.active_target_last_progress_stamp = rospy.Time.now()
         if distance <= self.target_tolerance:
+            if (
+                distance > self.creep_stop_distance
+                and target.kind in ("LASER_FRONTIER", "CAMERA_FRONTIER")
+                and self.front_clearance >= self.motion_stop_distance
+            ):
+                # Creep the last few centimetres instead of declaring arrival.
+                # A frontier inside the stop tolerance but still ahead of the
+                # robot was marked reached without any motion, so the planner
+                # re-dispatched the same 0.28 m target for ever and the corridor
+                # ahead never got mapped (run59 floor 1: cmd_vel (0, 0) for 58
+                # sim seconds, path_unreachable=87 for the room behind it).
+                command = Twist()
+                command.linear.x = min(self.motion_speed, self.creep_speed)
+                bearing = math.atan2(waypoint[1] - pose[1], waypoint[0] - pose[0])
+                command.angular.z = max(
+                    -0.20, min(0.20, 0.8 * normalize_angle(bearing - pose[2]))
+                )
+                self._publish_command(command)
+                return
             self._stop()
             with self.lock:
                 if self.path_index + 1 < len(self.active_path):
@@ -1975,12 +2759,13 @@ class CoverageExplorer:
                 if target.kind in ("SPHERE_REVIEW", "CAMERA_FRONTIER") and target.look_at is not None:
                     look_yaw = math.atan2(target.look_at[1] - pose[1], target.look_at[0] - pose[0])
                     error = normalize_angle(look_yaw - pose[2])
-                    if abs(error) > 0.12:
+                    if abs(error) > 0.12 and not self._align_stalled(abs(error)):
                         command = Twist()
                         command.angular.z = math.copysign(self.turn_speed, error)
                         self._publish_command(command)
                         self.review_hold_since = None
                         return
+                    self._clear_align_stall()
                     if self.review_hold_since is None:
                         self.review_hold_since = rospy.Time.now()
                         return
@@ -1995,7 +2780,12 @@ class CoverageExplorer:
                 self.last_plan_time = rospy.Time(0)
             return
         target_yaw = math.atan2(waypoint[1] - pose[1], waypoint[0] - pose[0])
-        doorway_entry = False
+        heading_tolerance = self.heading_tolerance
+        # Doorway heading discipline (run83 report): the path still owns the
+        # heading - there is deliberately NO override to the portal normal - but
+        # inside the door band the envelope is tightened so the robot lines up
+        # before crossing instead of clipping the jamb.  Leaving 0.25 rad
+        # everywhere was the relaxation that made door entry hard.
         if topology_state == "APPROACHING" and topology_portal is not None:
             tangent = (math.cos(gate[2]), math.sin(gate[2]))
             normal = (-math.sin(gate[2]), math.cos(gate[2]))
@@ -2006,21 +2796,27 @@ class CoverageExplorer:
                 + (waypoint[1] - gate[1]) * normal[1]
             )
             side_sign = 1.0 if topology_portal.side == "L" else -1.0
-            doorway_entry = bool(
+            if (
                 abs(along - topology_portal.along)
                 <= max(0.75, 0.5 * float(topology_portal.width) + 0.30)
                 and side_sign * waypoint_lateral > side_sign * lateral + 0.08
-            )
-            if doorway_entry:
-                target_yaw = corrected_portal_heading(
-                    gate[2], topology_portal.side, topology_portal.along - along
-                )
+            ):
+                heading_tolerance = min(heading_tolerance, 0.12)
         yaw_error = normalize_angle(target_yaw - pose[2])
         command = Twist()
-        heading_tolerance = 0.10 if doorway_entry else self.heading_tolerance
         if abs(yaw_error) > heading_tolerance:
-            command.angular.z = math.copysign(self.turn_speed, yaw_error)
+            # Turning (in place or while moving) ends the walking leg: the next
+            # walk ramps in again from the floor speed.
+            self.walk_ramp_started = None
+            if self._align_stalled(abs(yaw_error)):
+                # The bearing keeps flipping: move while turning instead of
+                # rotating on the spot for ever.
+                command.linear.x = min(float(self.motion_speed), 0.30)
+                command.angular.z = max(-0.6, min(0.6, 1.2 * yaw_error))
+            else:
+                command.angular.z = math.copysign(self.turn_speed, yaw_error)
         elif front < self.motion_stop_distance:
+            self._clear_align_stall()
             with self.lock:
                 # A local collision stop is a navigation failure, not proof
                 # that this viewpoint has been explored.  Suppress it only
@@ -2029,7 +2825,7 @@ class CoverageExplorer:
                     (
                         float(target.target[0]),
                         float(target.target[1]),
-                        rospy.Time.now().to_sec() + 6.0,
+                        rospy.Time.now().to_sec() + self.collision_block_seconds,
                     )
                 )
                 self.navigation_blocks += 1
@@ -2040,124 +2836,214 @@ class CoverageExplorer:
             self._stop()
             return
         else:
-            command.linear.x = min(self.motion_speed, 0.25) if doorway_entry else self.motion_speed
+            self._clear_align_stall()
+            now = rospy.Time.now()
+            if self.walk_ramp_started is None:
+                self.walk_ramp_started = now
+            goal = path[-1] if path else waypoint
+            remaining = math.hypot(goal[0] - pose[0], goal[1] - pose[1])
+            command.linear.x = leg_speed(
+                self.motion_speed,
+                (now - self.walk_ramp_started).to_sec(),
+                remaining,
+                accel_seconds=self.leg_accel_seconds,
+                decel_distance=self.leg_decel_distance,
+                ramp_floor_fraction=self.leg_ramp_floor_fraction,
+                minimum_speed=self.leg_minimum_speed,
+            )
             command.angular.z = max(-0.15, min(0.15, 0.8 * yaw_error))
         self._publish_command(command)
 
-    def _control_door_search(self, pose, front):
-        if self.door_search_sweep_phase is not None:
-            base = float(self.gate_source[2])
-            phase = self.door_search_sweep_phase
-            if phase == "LEFT":
-                target = normalize_angle(base + math.pi / 2.0)
-            elif phase == "RIGHT":
-                target = normalize_angle(base - math.pi / 2.0)
+    def _adopt_provisional_gate(self):
+        """Fall back to the configured entrance gate when detection stalls.
+
+        The transit phase ends only when the entrance gate is resolved from the
+        map.  The gate is by construction a fixed offset from the spawn anchor
+        (``virtual_gate_forward_distance`` along the configured heading), so that
+        provisional formulation is a valid entrance definition.  run66 wandered
+        the lobby for more than 100 sim seconds with
+        ``initial_forward_progress`` stuck at 7/14.5 m and never resolved one,
+        which blocked every later phase (no gate -> no task region -> no
+        targets).
+        """
+        with self.lock:
+            anchor = self.forward_anchor
+            yaw = self.forward_yaw
+            entry_world = self.lobby_entry_world
+            world_yaw = self.world_forward_yaw
+        if anchor is None:
+            return False
+        if self.transit_started_wall is None:
+            # Sim seconds, like every other budget: at RTF ~0.1 a wall-clock
+            # timeout would fire after only a few sim seconds and pre-empt the
+            # normal detection path.
+            self.transit_started_wall = rospy.Time.now().to_sec()
+        elapsed = rospy.Time.now().to_sec() - self.transit_started_wall
+        if elapsed < self.transit_timeout_seconds:
+            return False
+        distance = float(self.virtual_gate_forward_distance)
+        gate = (
+            anchor[0] + distance * math.cos(yaw),
+            anchor[1] + distance * math.sin(yaw),
+            float(yaw),
+        )
+        with self.lock:
+            self.gate_source = gate
+            if entry_world is not None and world_yaw is not None:
+                self.gate_world = (
+                    entry_world[0] + distance * math.cos(world_yaw),
+                    entry_world[1] + distance * math.sin(world_yaw),
+                    float(world_yaw),
+                )
+            # Adopting the configured gate is the documented way out of a stalled
+            # entrance transit (run66: progress stuck at 7/14.5 m), so it also
+            # ends the transit phase; otherwise the distance-gated control loop
+            # would keep driving instead of letting exploration start.
+            self.initial_forward_complete = True
+            self.transit_fallbacks += 1
+        rospy.logwarn(
+            "Entrance gate not detected from the map after %.0f s; adopting the "
+            "configured provisional gate at (%.2f, %.2f) yaw=%.2f "
+            "(transit fallbacks=%d)",
+            elapsed,
+            gate[0],
+            gate[1],
+            gate[2],
+            int(self.transit_fallbacks),
+        )
+        return True
+
+    def _ramped_forward_speed(self):
+        """Speed for the transit, ramped in from a standstill.
+
+        Returns 0.0 while the post-stand settling window is open, then a linear
+        ramp to ``initial_forward_speed``.  A quadruped that just stood up tips
+        over if it is asked for full speed immediately (run70: imu_roll -> pi at
+        sim 11 s under a 0.90 m/s command issued ~5 s after the RL switch).
+        """
+        if self.forward_started_stamp is None:
+            self.forward_started_stamp = rospy.Time.now()
+        elapsed = (rospy.Time.now() - self.forward_started_stamp).to_sec()
+        if elapsed < self.initial_forward_settle_seconds:
+            return 0.0
+        ramp_elapsed = elapsed - self.initial_forward_settle_seconds
+        span = self.initial_forward_ramp_seconds
+        target = min(self.motion_speed, self.initial_forward_speed)
+        if span <= 0.0:
+            return target
+        fraction = min(1.0, ramp_elapsed / span)
+        speed = (
+            self.initial_forward_start_speed
+            + (target - self.initial_forward_start_speed) * fraction
+        )
+        return max(0.0, min(target, speed))
+
+    def _committed_transit_along(self):
+        """Landing along of the far-zone committed leg the node should run now.
+
+        ONE source only: the core-requested landing
+        (``committed_transit_along``, set together with ``fixed_step_transit``).
+
+        Everything the node used to add on its own is deliberately gone (user,
+        2026-09-14: "stop changing things, roll it back - waiting 30 s at least
+        it can still go"): the default-forward-step fallback re-aimed the leg
+        right after the floor-entry transit, ran the corridor past the near-zone
+        doorways, and competed with the plan's own targets.  Waiting for the plan
+        is the behaviour that actually reaches targets, so the plan is the only
+        authority here.
+        """
+        plan = self.current_plan
+        diagnostics = getattr(plan, "diagnostics", None) or {}
+        along = diagnostics.get("committed_transit_along")
+        if diagnostics.get("fixed_step_transit") and along is not None:
+            return float(along)
+        return None
+
+    def _control_committed_transit(self, pose, target_along):
+        """Far-zone transit as a committed manoeuvre, not a chased target.
+
+        Same primitive as the lift return: get onto the corridor centreline,
+        align with the corridor axis, then run one measured distance to the
+        target doorway along.  Being open-loop, nothing can re-aim it mid-leg,
+        which is exactly why the frontier-driven version failed to reach the far
+        zone.  Returns True when it handled this control cycle.
+        """
+        # Phase gate (defensive): this leg owns the corridor only after the
+        # floor-entry transit is done and before the floor completes.
+        if not self.initial_forward_complete or self.floor_complete:
+            self.committed_transit = None
+            return False
+        with self.lock:
+            gate = self.gate_source
+            committed = self.committed_transit
+        if gate is None:
+            self.committed_transit = None
+            return False
+        cosine, sine = math.cos(float(gate[2])), math.sin(float(gate[2]))
+        dx = float(pose[0]) - float(gate[0])
+        dy = float(pose[1]) - float(gate[1])
+        along_now = dx * cosine + dy * sine
+        lateral = -dx * sine + dy * cosine
+        if committed is None:
+            if target_along - along_now <= self.committed_arrival_tolerance:
+                return False
+            if abs(lateral) > self.committed_center_tolerance:
+                heading = normalize_angle(
+                    float(gate[2]) - math.pi / 2.0
+                    if lateral > 0.0
+                    else float(gate[2]) + math.pi / 2.0
+                )
+                distance = abs(lateral)
             else:
-                target = normalize_angle(base)
-            error = normalize_angle(target - pose[2])
-            if abs(error) <= 0.12:
-                self._stop()
-                if phase == "LEFT":
-                    self.door_search_sweep_phase = "RIGHT"
-                    self.topology_region = "{}_DOOR_SWEEP_RIGHT".format(self.door_search_phase)
-                    rospy.loginfo("%s door left view complete; turning right 180 degrees", self.door_search_phase)
-                elif phase == "RIGHT":
-                    self.door_search_sweep_phase = "RESTORE"
-                    self.topology_region = "{}_DOOR_SWEEP_RESTORE".format(self.door_search_phase)
-                    rospy.loginfo("%s door right view complete; restoring corridor heading", self.door_search_phase)
-                else:
-                    self.door_search_sweep_phase = None
-                    self.door_search_active = False
-                    self.topology_region = "{}_DOOR_RESCAN".format(self.door_search_phase)
-                    self.last_plan_time = rospy.Time(0)
-                    rospy.loginfo("%s door sweep complete; corridor heading restored", self.door_search_phase)
-                return
-            command = Twist()
-            command.angular.z = math.copysign(min(0.45, self.turn_speed), error)
-            self._publish_command(command)
-            return
-        along, _lateral = self._topology_coordinates()
-        if along is None or self.door_search_step_start_along is None:
-            self._stop()
-            return
-        phase = self.door_search_phase
-        limit = (
-            self.door_search_rear_limit
-            if phase == "REAR"
-            else self.door_search_front_limit
-        )
-        segment_limit = min(
-            self.door_search_step_distance,
-            max(0.0, limit - self.door_search_travel),
-        )
-        progress = max(0.0, float(along) - float(self.door_search_step_start_along))
-        if progress >= segment_limit - 1e-3:
-            self._stop()
-            self.door_search_travel = min(limit, self.door_search_travel + progress)
-            self.door_search_active = False
-            self.door_search_step_start_along = None
-            self.door_search_idle_cycles = 0
-            self.topology_region = "{}_DOOR_RESCAN".format(phase)
-            self.last_plan_time = rospy.Time(0)
-            rospy.loginfo(
-                "%s door recognition segment complete; stopped for rescan "
-                "(travel %.2f/%.2f m)",
-                phase,
-                self.door_search_travel,
-                limit,
-            )
-            return
-
-        left, right = self.left_clearance, self.right_clearance
-        target_yaw = self.gate_source[2]
-        if math.isfinite(left) and math.isfinite(right):
-            target_yaw = normalize_angle(
-                target_yaw + max(-0.12, min(0.12, 0.10 * (left - right)))
-            )
-        error = normalize_angle(target_yaw - pose[2])
-        command = Twist()
-        if abs(error) > 0.18:
-            command.angular.z = math.copysign(min(0.35, self.turn_speed), error)
-        elif front >= self.motion_stop_distance:
-            command.linear.x = min(self.motion_speed, self.initial_forward_speed)
-            command.angular.z = max(-0.10, min(0.10, 0.8 * error))
-        self._publish_command(command)
-
-    def _control_rear_transit(self, pose, front):
-        along, lateral = self._topology_coordinates()
-        if along is None or self.rear_transit_start_along is None:
-            self._stop()
-            return
-        progress = max(0.0, float(along) - float(self.rear_transit_start_along))
-        if progress >= self.rear_transit_distance:
-            self._stop()
+                heading = normalize_angle(float(gate[2]))
+                distance = target_along - along_now
+            committed = {
+                "heading": heading,
+                "distance": float(distance),
+                "anchor": None,
+                # Remembered so a later plan cannot cancel the leg: a committed
+                # manoeuvre is immune to plan changes while it runs.
+                "target_along": float(target_along),
+            }
             with self.lock:
-                self.rear_transit_active = False
-                self.rear_rooms_unlocked = True
-                self.topology_region = "REAR_DOOR_SEARCH"
-                self.door_search_phase = "REAR"
-                self.door_search_travel = 0.0
-                self.door_search_idle_cycles = 0
-                self.last_plan_time = rospy.Time(0)
+                self.committed_transit = committed
             rospy.loginfo(
-                "Controlled rear transit complete at %.2f m; rear doors unlocked",
-                progress,
+                "Committed transit: heading=%.2f distance=%.2f m "
+                "(lateral=%.2f, along=%.2f -> %.2f)",
+                heading,
+                distance,
+                lateral,
+                along_now,
+                target_along,
             )
-            return
-        left, right = self.left_clearance, self.right_clearance
-        target_yaw = self.gate_source[2]
-        if math.isfinite(left) and math.isfinite(right):
-            target_yaw = normalize_angle(
-                target_yaw + max(-0.12, min(0.12, 0.10 * (left - right)))
-            )
-        error = normalize_angle(target_yaw - pose[2])
+            return True
+        error = normalize_angle(float(committed["heading"]) - float(pose[2]))
         command = Twist()
-        if abs(error) > 0.18:
-            command.angular.z = math.copysign(min(0.35, self.turn_speed), error)
-        elif front >= self.motion_stop_distance:
-            command.linear.x = self.transit_speed
-            command.angular.z = max(-0.10, min(0.10, 0.8 * error))
+        if abs(error) > self.heading_tolerance:
+            command.angular.z = math.copysign(self.turn_speed, error)
+            self._publish_command(command)
+            return True
+        if committed.get("anchor") is None:
+            committed = dict(committed)
+            committed["anchor"] = (float(pose[0]), float(pose[1]))
+            with self.lock:
+                self.committed_transit = committed
+            return True
+        anchor = committed["anchor"]
+        travelled = math.hypot(float(pose[0]) - anchor[0], float(pose[1]) - anchor[1])
+        if travelled >= float(committed["distance"]):
+            with self.lock:
+                self.committed_transit = None
+                self.active_target = None
+                self.active_path = ()
+                self.path_index = 0
+                self.last_plan_time = rospy.Time(0)
+            self._stop()
+            return True
+        command.linear.x = min(self.motion_speed, self.committed_speed)
+        command.angular.z = max(-0.15, min(0.15, 0.8 * error))
         self._publish_command(command)
+        return True
 
     def _control_initial_forward(self, pose, world_pose, front):
         with self.lock:
@@ -2165,10 +3051,24 @@ class CoverageExplorer:
                 self.forward_anchor = pose[:2]
                 self.forward_yaw = normalize_angle(self.configured_yaw)
                 self.lobby_entry_source = (pose[0], pose[1], self.forward_yaw)
-                if world_pose is not None:
-                    frame_yaw = world_pose[2] - pose[2]
-                    self.world_forward_yaw = normalize_angle(self.forward_yaw + frame_yaw)
-                    self.lobby_entry_world = (world_pose[0], world_pose[1], self.world_forward_yaw)
+            if self.lobby_entry_world is None and world_pose is not None:
+                # Latch the world-frame entry as soon as the metric pose exists,
+                # not only on the anchor's first cycle.  The metric pose can
+                # arrive a cycle later, and the world-frame gate
+                # (``virtual_isolation_door``) and the world-frame elevator
+                # portal are both derived from this anchor; the elevator
+                # transition node refuses to leave a completed floor while the
+                # world gate is None.  Measured on run117 floor 0: both stayed
+                # None, so after TASK_REGION_COMPLETE 4/4 the elevator node sat
+                # in "Waiting for map-confirmed elevator portal before
+                # transition" for the rest of the run.
+                frame_yaw = world_pose[2] - pose[2]
+                self.world_forward_yaw = normalize_angle(self.forward_yaw + frame_yaw)
+                self.lobby_entry_world = (
+                    world_pose[0],
+                    world_pose[1],
+                    self.world_forward_yaw,
+                )
             anchor, yaw = self.forward_anchor, self.forward_yaw
             left, right = self.left_clearance, self.right_clearance
         progress = (pose[0] - anchor[0]) * math.cos(yaw) + (pose[1] - anchor[1]) * math.sin(yaw)
@@ -2228,6 +3128,27 @@ class CoverageExplorer:
                     return
                 self.plane_policy_active = True
                 rospy.loginfo("Plane locomotion policy active; continuing exploration")
+            if int(self.floor_index) > 0:
+                # Upper-floor entry.  The elevator node already owns this
+                # floor's gate (the floors share x/y topology; it reuses floor
+                # 0's gate), so this transit only owed two things: cover the
+                # configured forward distance past the lift mouth - sweeping the
+                # front doorways into the map - and restore the plane gait after
+                # the stair policy the ride needs.  Do not replace a validated
+                # gate with a lift-mouth extrapolation.
+                with self.lock:
+                    self.initial_forward_complete = True
+                    self.topology_region = "CORRIDOR"
+                    self.active_target = None
+                    self.last_plan_time = rospy.Time(0)
+                self._publish_markers()
+                rospy.loginfo(
+                    "Floor-entry transit complete: %.2f m covered on floor %d; "
+                    "exploration enabled",
+                    progress,
+                    int(self.floor_index),
+                )
+                return
             with self.lock:
                 gate_distance = self.virtual_gate_forward_distance
                 gate_source = (
@@ -2295,6 +3216,7 @@ class CoverageExplorer:
             with self.lock:
                 self.gate_source = gate_source
                 self.gate_world = gate_world
+                self.initial_forward_complete = True
                 self.topology_region = "CORRIDOR"
                 self.active_target = None
                 self.last_plan_time = rospy.Time(0)
@@ -2310,8 +3232,25 @@ class CoverageExplorer:
         if abs(error) > 0.10:
             command.angular.z = math.copysign(self.turn_speed, error)
         elif front >= self.motion_stop_distance:
-            command.linear.x = self.initial_forward_speed
-            command.angular.z = max(-0.10, min(0.10, 0.8 * error))
+            # Entrance/lobby transit is the narrowest, most cluttered part of
+            # the route: run74 tumbled here after drifting into the door jamb at
+            # 0.60 m/s (roll rate spiked to 3.4 rad/s before the fall).  Cap the
+            # speed and centre laterally on the measured free span, exactly like
+            # the lift entry does.
+            # Speed profile: only the jamb zone in front of the entrance needs
+            # the reduced cap (run74 tumbled there); the rest of the lobby
+            # transit keeps full mission speed so the start is not needlessly
+            # slow.  distance_to_gate is along the transit axis.
+            distance_to_gate = self.virtual_gate_forward_distance - progress
+            near_jamb = 0.0 <= distance_to_gate <= self.transit_jamb_zone
+            speed_cap = (
+                self.transit_speed_cap if near_jamb else self.motion_speed
+            )
+            command.linear.x = min(self._ramped_forward_speed(), speed_cap)
+            lateral_term = 0.0
+            if math.isfinite(left) and math.isfinite(right):
+                lateral_term = max(-0.18, min(0.18, 0.10 * (right - left)))
+            command.angular.z = max(-0.25, min(0.25, 0.8 * error + lateral_term))
         self._publish_command(command)
 
     def _publish_gate(self):
@@ -2335,6 +3274,9 @@ class CoverageExplorer:
         self.gate_pub.publish(message)
 
     def _publish_command(self, command):
+        command.linear.x = clamp_linear_speed(command.linear.x, self.max_linear_speed)
+        if abs(command.linear.x) > 1e-3 or abs(command.angular.z) > 1e-3:
+            self.last_motion_command_stamp = rospy.Time.now()
         self.last_command = (float(command.linear.x), float(command.angular.z))
         self.command_pub.publish(command)
 
@@ -2347,7 +3289,7 @@ class CoverageExplorer:
         message = Path()
         message.header.stamp = rospy.Time.now()
         message.header.frame_id = grid.frame_id if grid is not None else "simnav_map"
-        for point in path[index:]:
+        for point in path[max(0, index - 1):]:
             pose = PoseStamped()
             pose.header = message.header
             pose.pose.position.x = point[0]
@@ -2355,6 +3297,199 @@ class CoverageExplorer:
             pose.pose.orientation.w = 1.0
             message.poses.append(pose)
         self.path_pub.publish(message)
+
+    def _note_path_start(self):
+        """T-E observable: how far the A* start sits from the robot's own pose.
+
+        Called immediately after ``active_path`` is replaced, while ``self.pose``
+        is still the pose the plan was made from.  The route now starts in the
+        robot's own cell (``_robot_local_safe``), so this should stay near zero;
+        a large value means the start moved away from the robot and is the T1
+        shape that used to be argued from RViz screenshots.  Diagnostic only:
+        no control flow reads ``path_start_offset`` back.
+        """
+        if not self.active_path or self.pose is None:
+            self.path_start_offset = None
+            return
+        first = self.active_path[0]
+        self.path_start_offset = math.hypot(
+            float(first[0]) - float(self.pose[0]),
+            float(first[1]) - float(self.pose[1]),
+        )
+
+    def _anchor_path_to_current_pose(self, path, target=None):
+        """Start the adopted route at the robot's *current* pose.
+
+        Planning is slow (``last_plan_ms`` up to 8 s), so the pose a route was
+        planned from is stale by the time it is adopted.  Splicing the old route
+        to the live pose is not enough: when the robot is off that route the
+        next surviving point can be metres away, so the controller's first leg -
+        and the drawn path - still started away from the robot.  Re-plan the
+        remainder from the live pose instead; the splice stays as the fallback
+        when no route can be recomputed.
+        """
+        path = tuple(path or ())
+        if not path or self.pose is None:
+            return path
+        x, y = float(self.pose[0]), float(self.pose[1])
+        goal = getattr(target, "target", None) if target is not None else None
+        if goal is not None:
+            nav_grid = (
+                self.navigation_grid if self.navigation_grid is not None else self.grid
+            )
+            if nav_grid is not None:
+                replanned, _length, _clearance = self.planner.navigation_path(
+                    nav_grid,
+                    (x, y, float(self.pose[2]) if len(self.pose) > 2 else 0.0),
+                    (float(goal[0]), float(goal[1])),
+                )
+                if replanned:
+                    return tuple(replanned)
+        # Fallback: splice the stale route at the nearest point ahead.
+        best_index, best_distance = 0, None
+        for index, point in enumerate(path):
+            distance = math.hypot(float(point[0]) - x, float(point[1]) - y)
+            if best_distance is None or distance < best_distance:
+                best_index, best_distance = index, distance
+        # Continue from the point *after* the nearest one: starting at the
+        # nearest point itself can put a behind-the-robot waypoint first and
+        # reintroduce the turn-back this exists to remove.
+        tail = path[best_index + 1:] if best_index + 1 < len(path) else path[best_index:]
+        return ((x, y),) + tuple(tail)
+
+    def _active_remaining_information(self, plan):
+        """Fraction of the active viewpoint's information still unobserved.
+
+        The active target's gains were frozen when it was chosen, so the live
+        number is read from the fresh candidate sitting at the same place: if
+        its gain has collapsed (or the viewpoint no longer appears in the pool
+        at all, i.e. it has nothing left to see) the target has been observed
+        and may be handed over.
+        """
+        active = self.active_target
+        if active is None or active.look_at is None and active.camera_gain <= 0.0:
+            return None
+        metric = (
+            "camera_gain"
+            if active.kind in ("CAMERA_FRONTIER", "SPHERE_REVIEW")
+            else "combined_gain"
+        )
+        recorded = float(getattr(active, metric, 0.0))
+        if recorded <= 0.0:
+            return None
+        fresh = None
+        for item in plan.targets or ():
+            if item.kind != active.kind:
+                continue
+            if math.hypot(
+                item.target[0] - active.target[0], item.target[1] - active.target[1]
+            ) <= 0.4:
+                fresh = item
+                break
+        if fresh is None:
+            # The viewpoint is gone from the pool: nothing left to observe.
+            return 0.0
+        return max(0.0, float(getattr(fresh, metric, 0.0)) / recorded)
+
+    def _arm_room_approach(self, topology_id):
+        """Lock the room a freshly adopted target belongs to.
+
+        Shared by the ordinary plan dispatch and ``_switch_active_target``.  A
+        mid-route handover is a real adoption of a target, so it must arm the
+        same room state; it used to skip this, leaving ``locked_topology`` at
+        ``None`` so the next handover had no room constraint.  Measured on
+        run107 floor 0: 13 handovers in 196 sim seconds, alternating between
+        ROOM_L_15 and ROOM_R_15 (``along`` 4.1-8.9 m, ``lateral`` +0.4 to
+        -3.7 m) and never entering either room.
+        """
+        lock = room_lock_for_target(topology_id, self.retired_topologies)
+        if lock is None:
+            return
+        self.topology_lock = lock
+        self.topology_region = "ROOM_APPROACHING"
+        state = self.topology_states.setdefault(
+            lock, {"state": "APPROACHING", "targets": 0}
+        )
+        # A new frontier in the same locked room is not a new doorway approach:
+        # preserve geometric proof that the robot already crossed into it.
+        state["state"] = topology_state_for_new_target(state.get("state"))
+
+    def _switch_active_target(self, plan):
+        """Adopt a better viewpoint for the same task before arriving.
+
+        See ``target_switch_allowed`` for the bounds; this only supplies the
+        live state (dwell time and room lock) and performs the swap.
+        """
+        active = self.active_target
+        candidate = plan.target
+        if active is None or candidate is None:
+            return False
+        started = getattr(self, "active_target_started", None)
+        dwell = 1e9
+        if started is not None and started != rospy.Time(0):
+            dwell = (rospy.Time.now() - started).to_sec()
+        if not target_switch_allowed(
+            active,
+            candidate,
+            dwell,
+            locked_topology=self.topology_lock,
+            dwell_seconds=self.target_switch_dwell,
+            active_remaining=self._active_remaining_information(plan),
+        ):
+            return False
+        rospy.loginfo(
+            "Switching target before arrival: %s (%s) -> %s (%s) at %.2f m vs %.2f m",
+            active.kind, active.topology_id, candidate.kind, candidate.topology_id,
+            candidate.path_length, active.path_length,
+        )
+        self.target_switches += 1
+        self.active_target = candidate
+        self.active_path = self._anchor_path_to_current_pose(
+            tuple(candidate.path), candidate
+        )
+        # path[0] is now the robot's live pose, so aim at path[1] exactly as the
+        # ordinary dispatch does.
+        self.path_index = min(1, len(self.active_path) - 1) if self.active_path else 0
+        self._note_path_start()
+        # A handover into a room is a room approach: without this the lock stays
+        # None and target_switch_allowed cannot keep the next handover in the
+        # same room.
+        self._arm_room_approach(getattr(candidate, "topology_id", None))
+        self.active_target_started = rospy.Time.now()
+        self.active_target_last_progress = None
+        self.active_target_last_progress_stamp = rospy.Time.now()
+        self.active_target_last_distance = None
+        return True
+
+    def _refresh_active_heading(self, plan):
+        """Re-aim the active viewpoint from the newest map while still driving.
+
+        The viewpoint POSITION is deliberately left where it was chosen --
+        swapping targets by gain comparison is what made the old replacement
+        mechanism oscillate ("the target changed back and forth for an hour").
+        The ORIENTATION is different: it is a pure function of what is still
+        unseen, so recomputing it every plan cycle costs nothing and means the
+        look-at bearing keeps improving as the robot walks up to the doorway
+        instead of being frozen at whatever the map looked like when the target
+        was first picked.  FrontierTarget is frozen, so the refreshed copy is
+        swapped in wholesale.
+        """
+        active = self.active_target
+        if active is None or active.look_at is None:
+            return
+        if active.kind not in ("CAMERA_FRONTIER", "SPHERE_REVIEW"):
+            return
+        best = None
+        for item in plan.targets or ():
+            if item.kind != active.kind or item.look_at is None:
+                continue
+            distance = math.hypot(
+                item.target[0] - active.target[0], item.target[1] - active.target[1]
+            )
+            if distance <= 0.4 and (best is None or distance < best[0]):
+                best = (distance, item)
+        if best is not None and best[1].look_at != active.look_at:
+            self.active_target = replace(active, look_at=best[1].look_at)
 
     def _publish_markers(self):
         with self.lock:
@@ -2636,16 +3771,6 @@ class CoverageExplorer:
             stable = self._stable_spheres()
             unreviewed = [item["id"] for item in stable if item["id"] not in self.reviewed_hypotheses]
             camera_ready = self._camera_exploration_ready_locked()
-            rear_transit_progress = 0.0
-            along, _lateral = self._topology_coordinates()
-            if (
-                self.rear_transit_active
-                and along is not None
-                and self.rear_transit_start_along is not None
-            ):
-                rear_transit_progress = max(
-                    0.0, float(along) - float(self.rear_transit_start_along)
-                )
             extent = self.current_plan
             room_coverages = {}
             observed_portals = []
@@ -2683,7 +3808,7 @@ class CoverageExplorer:
                 "floor_index": self.floor_index,
                 "state": "FLOOR_COMPLETE" if self.floor_complete else "INITIAL_FORWARD" if self.gate_source is None else "COVERAGE_EXPLORATION",
                 "topology_region": self.topology_region,
-                "initial_forward_active": self.gate_source is None,
+                "initial_forward_active": not self.initial_forward_complete,
                 "initial_forward_distance": self.initial_forward_distance,
                 "initial_forward_progress": max(0.0, progress),
                 "plane_policy_active": self.plane_policy_active,
@@ -2715,19 +3840,6 @@ class CoverageExplorer:
                     self.completed_front_sides == {"L", "R"}
                 ),
                 "completed_front_sides": sorted(self.completed_front_sides),
-                "rear_transit_active": self.rear_transit_active,
-                "rear_transit_distance": self.rear_transit_distance,
-                "rear_transit_progress": rear_transit_progress,
-                "rear_rooms_unlocked": self.rear_rooms_unlocked,
-                "door_search_active": self.door_search_active,
-                "door_search_phase": self.door_search_phase,
-                "door_search_step_distance": self.door_search_step_distance,
-                "door_search_travel": self.door_search_travel,
-                "door_search_limit": (
-                    self.door_search_rear_limit
-                    if self.door_search_phase == "REAR"
-                    else self.door_search_front_limit
-                ),
                 "completed_topologies": sorted(self.completed_topologies),
                 "reused_topology_ids": sorted(self.reused_portals),
                 "topology_states": self.topology_states,
@@ -2736,6 +3848,18 @@ class CoverageExplorer:
                 "camera_union_points": len(self.camera_points_world),
                 "camera_union_limit": int(self.camera_points_memory_limit),
                 "room_coverages": room_coverages,
+                # Region state as one derived value per room (UNSEEN / ACTIVE /
+                # COVERED).  This is the single truth the completion bookkeeping
+                # is being folded into; it is published first so a run can be
+                # checked for completeness room by room.
+                "room_region_status": {
+                    str(room): region_status(
+                        (data or {}).get("combined", 0.0),
+                        self.room_combined_coverage_target,
+                        active=(str(room) == str(self.topology_lock)),
+                    )
+                    for room, data in (room_coverages or {}).items()
+                },
                 "observed_portals": observed_portals,
                 "actionable_portals": [
                     item.topology_id for item in (extent.actionable_portals if extent is not None else ())
@@ -2743,7 +3867,6 @@ class CoverageExplorer:
                 "planner_diagnostics": dict(extent.diagnostics or {})
                 if extent is not None
                 else {},
-                "target_replacements": self.target_replacements,
                 "targets_reached": self.targets_reached,
                 "laser_coverage": snapshot.laser if snapshot is not None else 0.0,
                 "camera_coverage": snapshot.camera if snapshot is not None else 0.0,
@@ -2763,14 +3886,55 @@ class CoverageExplorer:
                 "navigation_reachable_cells": extent.navigation_reachable_cells if extent is not None else 0,
                 "navigation_blocks": self.navigation_blocks,
                 "plan_cycles": self.plan_cycles,
+                # A paused planner (missing input) is otherwise only visible as a
+                # frozen plan_cycles counter.
+                "plan_input_gaps": int(self.plan_input_gaps),
                 "plan_failures": self.plan_failures,
                 "last_plan_reason": self.last_plan_reason,
+                "last_plan_ms": round(float(self.last_plan_ms), 2),
+                "target_switches": int(self.target_switches),
                 "last_plan_error": self.last_plan_error,
                 "candidate_topologies": list(extent.candidate_topologies) if extent is not None else [],
                 "task_forward_limit": extent.task_forward_limit if extent is not None else self.planner.forward_depth,
                 "task_extent_confident": extent.task_extent_confident if extent is not None else False,
                 "sphere_hypotheses": len(stable),
                 "unreviewed_sphere_hypotheses": unreviewed,
+                "room_entry_counts": dict(self.room_entry_counts),
+                "room_entry_sequence": [list(item) for item in self.room_entry_sequence],
+                "path_start_offset": (
+                    round(float(self.path_start_offset), 3)
+                    if self.active_path and self.path_start_offset is not None
+                    else None
+                ),
+                # Diagnostic: an active committed corridor leg is otherwise
+                # invisible in the payload (its absence was read as "no leg").
+                "committed_transit": (
+                    dict(self.committed_transit)
+                    if self.committed_transit is not None
+                    else None
+                ),
+                "retired_topologies": sorted(self.retired_topologies),
+                "end_pose_clearance": self._end_pose_clearance(),
+                "floor_end_corridor_tolerance": self.floor_end_corridor_tolerance,
+                "room_exhaust_grace_seconds": self.room_exhaust_grace_seconds,
+                "room_exhaust_min_gain": self.room_exhaust_min_gain,
+                "room_exit_requires_gain": self.room_exit_requires_gain,
+                "stuck_target_drops": int(self.stuck_target_drops),
+                "control_faults": int(self.control_faults),
+                "plan_faults": int(self.plan_faults),
+                "transit_fallbacks": int(self.transit_fallbacks),
+                "empty_path_cycles": int(self.empty_path_cycles),
+                "unsafe_path_cycles": int(self.unsafe_path_cycles),
+                "unsafe_path_replans": int(self.unsafe_path_replans),
+                "route_refreshes": int(self.route_refreshes),
+                "lock_release_counts": dict(self.lock_release_counts),
+                "room_interior_retries": dict(self.room_interior_retries),
+                "interior_only": bool(self._interior_targets_only_locked()),
+                "progress_idle_seconds": (
+                    (rospy.Time.now() - self.last_progress_stamp).to_sec()
+                    if self.last_progress_stamp is not None
+                    else 0.0
+                ),
                 "cmd_vel": {"linear_x": self.last_command[0], "angular_z": self.last_command[1]},
             }
         message = String(data=json.dumps(payload, sort_keys=True))

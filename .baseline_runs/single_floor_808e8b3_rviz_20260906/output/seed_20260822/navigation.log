@@ -1,0 +1,15 @@
+Multi thread started 
+p_pre->lidar_type 1
+~~~~/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/FAST_LIO/ doesn't exist
+[33m[WARN] [1788658847.686175313, 2.758000000]: No point, skip this scan!
+[0m
+[0m[INFO] [1788658845.698873742]: Initializing nodelet with 24 worker threads.[0m
+Error in XmlRpcClient::writeRequest: write error (Connection refused).
+Error in XmlRpcClient::writeRequest: write error (Connection refused).
+[33m[WARN] [1788659350.202708351, 0.022000000]: Detected jump back in time of 3.198s. Clearing TF buffer.[0m
+[33m[WARN] [1788659389.220775325, 2.610000000]: Shutdown request received.[0m
+[33m[WARN] [1788659389.220828981, 2.610000000]: Reason given for shutdown: [[/simnav_cloud_to_scan] Reason: new node registered with same name][0m
+shutdown request: [/localization_bridge] Reason: new node registered with same name
+shutdown request: [/lio_health_monitor] Reason: new node registered with same name
+shutdown request: [/map_views] Reason: new node registered with same name
+shutdown request: [/lio_occupancy] Reason: new node registered with same name

@@ -1,0 +1,294 @@
+diff --git a/src/simnav/scripts/coverage_explorer_core.py b/src/simnav/scripts/coverage_explorer_core.py
+index c2fda7e..b4983b0 100644
+--- a/src/simnav/scripts/coverage_explorer_core.py
++++ b/src/simnav/scripts/coverage_explorer_core.py
+@@ -1116,6 +1116,25 @@ class TaskCoveragePlanner:
+     def _navigation_fields(self, grid, task_mask=None):
+         data = np.asarray(grid.data)
+         occupied = data >= 50
++        # FAST-LIO endpoints are accumulated permanently by the lightweight
++        # occupancy node, so a single-frame return leaves isolated one- and
++        # two-cell occupied speckle behind.  That speckle is harmless on its
++        # own, but inflating it by the navigation clearance closes a passage
++        # the robot can physically drive through, and A* then reports "no
++        # route" for a corridor the robot has already traversed.  Measured on
++        # run29 floor 0: the rear-corridor pocket reachable from the robot's
++        # pose held 28732 cells at the node's 0.30 m clearance with the
++        # elevator staging point (5.75, -0.35) unreachable; removing 349 cells
++        # of <=2-cell speckle (5.7% of the occupied set) reconnected it to
++        # 47458 cells with the staging point reachable again.  Real obstacles
++        # are larger than two cells and are left untouched.  This is the same
++        # technique, with the same justification, that
++        # ``navigation_path_from_room_through_portal`` already applies to the
++        # door-normal crossing.
++        if occupied.any():
++            components, _count = label(occupied, np.ones((3, 3), dtype=np.int8))
++            sizes = np.bincount(components.reshape(-1))
++            occupied = occupied & (sizes[components] > 2)
+         clearance = distance_transform_edt(~occupied) * grid.resolution
+         safe = (
+             (data >= 0)
+@@ -1126,6 +1145,97 @@ class TaskCoveragePlanner:
+             safe &= np.asarray(task_mask, dtype=bool)
+         return safe, clearance
+ 
++    def verified_door_band(
++        self, grid, gate_center, forward_yaw, portals, clearance,
++        portal_clearance=0.12,
++    ):
++        """Cells of an already-confirmed doorway that are physically crossable.
++
++        ``safe`` requires ``clearance >= navigation_clearance`` (0.24 m), but
++        FAST-LIO endpoints are accumulated permanently, so a single stray
++        occupied pixel on the wall line seals a doorway once it is inflated and
++        cuts its room out of the reachable set.  Measured on run27 floor 0: the
++        front-right room held 11869 task cells of which only 260 stayed
++        reachable, ``room_reachable_camera_unseen_cells`` was 0 while 7654
++        cells were unseen, and the planner could therefore never emit a target
++        that would take the robot through the door.
++
++        This marks only the straight door-normal band at the *cached* door
++        centre of a portal the node has already confirmed, and only when every
++        cell of that band is known-free and its un-inflated clearance still
++        exceeds the same verified-crossing threshold the accepted return path
++        uses (``navigation_path_from_room_through_portal``).  It is not a
++        generic wall-gap fallback: unknown cells, walls and real obstacles all
++        still refuse the band.
++        """
++        data = np.asarray(grid.data)
++        occupied = data >= 50
++        band = np.zeros(data.shape, dtype=bool)
++        for portal in portals:
++            sign = 1.0 if portal.side == "L" else -1.0
++            corridor_stage = self._portal_waypoint(
++                gate_center, forward_yaw, float(portal.along), 0.0
++            )
++            for along_offset in portal_return_along_offsets(portal.width):
++                room_stage = self._portal_waypoint(
++                    gate_center,
++                    forward_yaw,
++                    float(portal.along) + along_offset,
++                    sign * (self.corridor_half_width + 1.2),
++                )
++                length = math.hypot(
++                    room_stage[0] - corridor_stage[0],
++                    room_stage[1] - corridor_stage[1],
++                )
++                count = max(1, int(math.ceil(length / max(grid.resolution, 0.05))))
++                sample_cells = []
++                for index in range(count + 1):
++                    point = (
++                        corridor_stage[0]
++                        + (room_stage[0] - corridor_stage[0]) * index / count,
++                        corridor_stage[1]
++                        + (room_stage[1] - corridor_stage[1]) * index / count,
++                    )
++                    sample_cells.append(grid.world_to_cell(*point))
++                # Walk a 4-connected digital line through the samples.  Marking
++                # only the sample cells leaves single-cell gaps (the run27 test
++                # grid skipped exactly one row at y = 1.25), and a one-cell gap
++                # is enough to break the cardinal flood fill that produces
++                # ``reachable``, which would silently defeat the whole band.
++                cells = []
++                for index, start in enumerate(sample_cells):
++                    cells.append(start)
++                    if index + 1 >= len(sample_cells):
++                        break
++                    current = start
++                    goal = sample_cells[index + 1]
++                    while current != goal:
++                        delta_row = goal[0] - current[0]
++                        delta_column = goal[1] - current[1]
++                        if abs(delta_row) >= abs(delta_column):
++                            current = (
++                                current[0] + (1 if delta_row > 0 else -1),
++                                current[1],
++                            )
++                        else:
++                            current = (
++                                current[0],
++                                current[1] + (1 if delta_column > 0 else -1),
++                            )
++                        cells.append(current)
++                if any(
++                    not self._in_bounds(data.shape, *cell) for cell in cells
++                ):
++                    continue
++                if any(
++                    data[cell] < 0 or occupied[cell] or clearance[cell] < portal_clearance
++                    for cell in cells
++                ):
++                    continue
++                for cell in cells:
++                    band[cell] = True
++        return band
++
+     @staticmethod
+     def _direction_index(yaw):
+         values = [math.atan2(d_row, d_column) for d_row, d_column in TaskCoveragePlanner.DIRECTIONS]
+@@ -1700,7 +1810,31 @@ class TaskCoveragePlanner:
+         # cells as connectors.  Applying the room mask to ``safe`` turns an
+         # inferred portal line into a hard wall and is exactly the failure
+         # mode seen when the lower half of both rooms becomes unreachable.
+-        safe, _ = self._navigation_fields(nav_grid, None)
++        safe, clearance_field = self._navigation_fields(nav_grid, None)
++        # Reconnect a room whose *confirmed* doorway the inflated navigation map
++        # has sealed.  reachable is derived from safe, so this has to happen
++        # before the flood fill; without it the room holds unseen cells that no
++        # candidate can ever reach (run27 floor 0 front-right room: 11869 task
++        # cells, 260 reachable, 7654 unseen, room_reachable_camera_unseen = 0).
++        completed_ids = {str(item) for item in completed_topologies}
++        confirmed_ids = {str(item) for item in confirmed_topologies}
++        door_portals = [
++            portal
++            for portal in remembered_portals
++            if str(portal.topology_id) in confirmed_ids
++            and str(portal.topology_id) not in completed_ids
++        ]
++        verified_band_cells = 0
++        verified_door_ids = []
++        if door_portals:
++            band = self.verified_door_band(
++                nav_grid, gate_center, forward_yaw, door_portals, clearance_field
++            )
++            safe = safe | band
++            verified_band_cells = int(np.count_nonzero(band))
++            verified_door_ids = sorted(
++                str(portal.topology_id) for portal in door_portals
++            )
+         seed = self._nearest_seed(nav_grid, safe, robot_pose)
+         if seed is None:
+             return CoveragePlan(
+@@ -1733,6 +1867,16 @@ class TaskCoveragePlanner:
+             "room_camera_unseen_cells": 0,
+             "room_reachable_cells": 0,
+             "room_reachable_camera_unseen_cells": 0,
++            # Which ownership every generated candidate carried, and how many
++            # camera viewpoints the corridor fallback had to rescue.  Without
++            # this a wrong_topology count cannot be attributed to a kind or an
++            # owner, which is what made the run26 deadlock take two cycles to
++            # localise.
++            "generated_kind_counts": {},
++            "corridor_camera_fallback": 0,
++            "locked_topology_family": [],
++            "verified_door_band_cells": verified_band_cells,
++            "verified_door_portals": verified_door_ids,
+             "candidate_reject_counts": {
+                 "visited_or_too_near": 0,
+                 "wrong_topology": 0,
+@@ -2044,6 +2188,13 @@ class TaskCoveragePlanner:
+                 )
+             )
+ 
++        generated_kind_counts = {}
++        for item in targets:
++            generated_kind_counts[item.kind] = (
++                generated_kind_counts.get(item.kind, 0) + 1
++            )
++        diagnostics["generated_kind_counts"] = generated_kind_counts
++
+         # Attach an online topology owner before ranking.  In the previous
+         # ordering this happened after sorting, so every candidate was still
+         # labelled CORRIDOR and the far-room-first policy never took effect.
+@@ -2128,9 +2279,39 @@ class TaskCoveragePlanner:
+         }
+         if topology_lock:
+             before_topology_filter = len(targets)
++            # Portal ids are 0.5 m longitudinal bins of one physical doorway
++            # and they drift as SLAM refines the wall, so a target for the
++            # locked room can carry a neighbouring bin's id.  Matching the id
++            # exactly emptied the pool and burned the node's whole station
++            # budget without entering: on run26 floor 0 the explorer held
++            # ROOM_R_15 with candidate_topologies == () and
++            # last_plan_reason NO_FRONTIER for 59 consecutive sim seconds
++            # (wrong_topology dropped 27 candidates) and released the lock
++            # without entering, while that same doorway was simultaneously
++            # known as ROOM_R_30/36/39/43/48/52/56.  Accept every bin of the
++            # same physical door, using the tolerance the completion test
++            # already applies.
++            allowed_topologies = {str(topology_lock)}
++            locked_portal = next(
++                (
++                    portal
++                    for portal in confirmed_portals
++                    if portal.topology_id == str(topology_lock)
++                ),
++                None,
++            )
++            if locked_portal is not None:
++                allowed_topologies.update(
++                    portal.topology_id
++                    for portal in confirmed_portals
++                    if portal.side == locked_portal.side
++                    and abs(float(portal.along) - float(locked_portal.along))
++                    <= station_tolerance
++                )
++            diagnostics["locked_topology_family"] = sorted(allowed_topologies)
+             locked_targets = [
+                 item for item in targets
+-                if item.topology_id == str(topology_lock)
++                if item.topology_id in allowed_topologies
+             ]
+             locked_camera = [
+                 item for item in locked_targets
+@@ -2188,17 +2369,29 @@ class TaskCoveragePlanner:
+                 # actionable_portals=16, camera coverage 0.414 against a 0.84
+                 # target, and cmd_vel exactly 0 for 731 consecutive telemetry
+                 # samples while ROOM_R_55 alone still had 5665 unseen cells.
+-                # Admit camera viewpoints owned by unfinished rooms strictly as
+-                # a last resort.  Normal corridor transit is untouched because
+-                # this cannot run while any corridor lidar frontier exists, the
+-                # confirmation and active-portal filters below still apply, and
+-                # a floor whose portals are all complete still reports
+-                # NO_FRONTIER.
+-                targets = [
+-                    item for item in unfiltered_targets
+-                    if item.kind == "CAMERA_FRONTIER"
+-                    and item.topology_id in active_station_topologies
+-                ]
++                # Ownership is deliberately not checked here.  Portal ids are
++                # transient 0.5 m bins of one physical doorway and the room
++                # owner they imply changes as the map refines, so gating the
++                # fallback on an owner id drops exactly the viewpoints that are
++                # needed (run26 floor 0: wrong_topology discarded 29 camera
++                # candidates while the front-right room was still unvisited).
++                # A camera viewpoint is a safe action by construction -- it is
++                # generated only from reachable, still-unseen, safety-checked
++                # cells -- and the confirmation and completed-portal filters
++                # below still apply, so a floor whose rooms are all finished
++                # keeps reporting NO_FRONTIER.
++                fallback = (
++                    [
++                        item for item in unfiltered_targets
++                        if item.kind == "CAMERA_FRONTIER"
++                    ]
++                    if active_station_topologies
++                    else []
++                )
++                targets = fallback
++                diagnostics["corridor_camera_fallback"] = len(fallback)
++            else:
++                diagnostics["corridor_camera_fallback"] = 0
+             diagnostics["candidate_reject_counts"]["wrong_topology"] += (
+                 before_topology_filter - len(targets)
+             )
+@@ -2378,6 +2571,19 @@ class TaskCoveragePlanner:
+         if not targets:
+             if diagnostics["assignment_portal_count"] == 0:
+                 diagnostics["last_reject_reason"] = "NO_ASSIGNMENT_PORTAL"
++            elif not topology_lock:
++                # The room_* counters below are only populated while a room is
++                # locked.  Testing them in corridor ownership always matched
++                # the first branch and reported EMPTY_ROOM_TASK_MASK, which
++                # sent a whole debugging cycle after an empty room mask that
++                # had never been computed.  Report the ownership-local reasons
++                # instead.
++                if diagnostics["candidate_reject_counts"]["path_unreachable"]:
++                    diagnostics["last_reject_reason"] = "CANDIDATE_PATH_UNREACHABLE"
++                elif diagnostics["candidate_reject_counts"]["wrong_topology"]:
++                    diagnostics["last_reject_reason"] = "CANDIDATE_TOPOLOGY_MISMATCH"
++                else:
++                    diagnostics["last_reject_reason"] = "NO_FRONTIER_AFTER_FILTERS"
+             elif diagnostics["room_task_cells"] == 0:
+                 diagnostics["last_reject_reason"] = "EMPTY_ROOM_TASK_MASK"
+             elif diagnostics["room_eligible_cells"] == 0:

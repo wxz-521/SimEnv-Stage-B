@@ -6,10 +6,11 @@ import unittest
 import numpy as np
 
 from coverage_explorer_core import (
+    FrontierTarget,
+    admit_candidate,
     GridView,
     RoomPortal,
     TaskCoveragePlanner,
-    corrected_portal_heading,
     coverage_classification,
     detect_lobby_portals,
     coverage_snapshot,
@@ -18,6 +19,8 @@ from coverage_explorer_core import (
     opposite_room_portal,
     pair_room_portals,
     portal_return_along_offsets,
+    room_lock_for_target,
+    target_switch_allowed,
     task_region_mask,
     topology_region_mask,
     topology_id_for_point,
@@ -108,12 +111,6 @@ class CoverageMathTest(unittest.TestCase):
         self.assertFalse(topology_completion_ready(rooms[:3], 4, 0))
         self.assertFalse(topology_completion_ready(rooms, 4, 1))
         self.assertTrue(topology_completion_ready(rooms, 4, 0))
-
-    def test_portal_heading_faces_room_with_small_centre_correction(self):
-        self.assertAlmostEqual(corrected_portal_heading(0.0, "L", 0.0), math.pi / 2.0)
-        self.assertAlmostEqual(corrected_portal_heading(0.0, "R", 0.0), -math.pi / 2.0)
-        self.assertGreater(corrected_portal_heading(0.0, "R", 0.2), -math.pi / 2.0)
-        self.assertLess(corrected_portal_heading(0.0, "L", 0.2), math.pi / 2.0)
 
     def test_new_room_target_preserves_crossing_and_return_states(self):
         self.assertEqual(topology_state_for_new_target(None), "APPROACHING")
@@ -227,7 +224,333 @@ class TaskExtentTest(unittest.TestCase):
         self.assertFalse(extent.confident)
 
 
+class CandidateAdmissionTest(unittest.TestCase):
+    """One gate for every candidate.
+
+    The lobby, the finished front room and the corridor-touring regressions were
+    three different filters that a newly admitted candidate pool slipped past.
+    These tests pin the gate itself so a fourth one cannot leak in silently.
+    """
+
+    GATE = (0.0, 0.0)
+    YAW = 0.0            # corridor forward is +x
+
+    @staticmethod
+    def _target(x, y, topology="ROOM_L_15", kind="CAMERA_FRONTIER"):
+        return FrontierTarget(
+            kind=kind,
+            target=(x, y),
+            path=((0.0, 0.0), (x, y)),
+            path_length=5.0,
+            laser_gain=0.0,
+            camera_gain=1.0,
+            combined_gain=1.0,
+            min_clearance=0.4,
+            topology_id=topology,
+        )
+
+    def _admit(self, item, **kwargs):
+        kwargs.setdefault("active_topologies", ("ROOM_L_15",))
+        return admit_candidate(item, self.GATE, self.YAW, (2.0, 0.0), **kwargs)
+
+    def test_a_room_viewpoint_ahead_and_in_zone_is_admitted(self):
+        self.assertEqual(self._admit(self._target(6.0, 1.5)), (True, "ADMITTED"))
+
+    def test_the_lobby_is_never_a_task_region(self):
+        self.assertEqual(self._admit(self._target(-3.0, 1.5))[1], "LOBBY")
+
+    def test_a_corridor_camera_viewpoint_is_refused(self):
+        self.assertEqual(
+            self._admit(self._target(6.0, 0.2, topology="CORRIDOR"))[1],
+            "CORRIDOR_CAMERA",
+        )
+
+    def test_a_point_behind_the_robot_is_refused(self):
+        self.assertEqual(self._admit(self._target(0.5, 1.5))[1], "BEHIND")
+
+    def test_a_room_outside_the_active_zone_is_refused(self):
+        self.assertEqual(
+            self._admit(self._target(6.0, 1.5, topology="ROOM_R_99"))[1], "ZONE"
+        )
+
+    def test_a_covered_room_is_refused(self):
+        self.assertEqual(
+            self._admit(
+                self._target(6.0, 1.5),
+                room_status={"ROOM_L_15": "COVERED"},
+            )[1],
+            "ROOM_COVERED",
+        )
+
+    def test_a_corridor_laser_frontier_needs_the_active_zone(self):
+        item = self._target(6.0, 0.2, topology="CORRIDOR", kind="LASER_FRONTIER")
+        self.assertEqual(self._admit(item)[1], "ZONE")
+        self.assertEqual(
+            self._admit(item, corridor_in_active_zone=True), (True, "ADMITTED")
+        )
+
+
+class RoomLockForTargetTest(unittest.TestCase):
+    """Both adoption paths must arm the room lock from the same rule.
+
+    The mid-route handover forgot this, so ``locked_topology`` stayed None and
+    the explorer ping-ponged between the two front rooms (run107 floor 0: 13
+    handovers in 196 sim seconds, never entering either).
+    """
+
+    def test_a_room_target_locks_its_room(self):
+        self.assertEqual(room_lock_for_target("ROOM_L_15"), "ROOM_L_15")
+
+    def test_corridor_and_unassigned_targets_never_lock(self):
+        self.assertIsNone(room_lock_for_target("CORRIDOR"))
+        self.assertIsNone(room_lock_for_target("ROOM_L_15_UNASSIGNED"))
+        self.assertIsNone(room_lock_for_target(None))
+
+    def test_a_retired_room_is_not_re_locked(self):
+        self.assertIsNone(
+            room_lock_for_target("ROOM_L_15", retired={"ROOM_L_15"})
+        )
+        self.assertEqual(
+            room_lock_for_target("ROOM_R_15", retired={"ROOM_L_15"}), "ROOM_R_15"
+        )
+
+
+class TargetSwitchTest(unittest.TestCase):
+    """A target is handed over only when it has itself been observed.
+
+    User requirement: switching is triggered by the current viewpoint's own
+    remaining information collapsing while walking -- NOT by comparing two
+    candidates' gains.  The earlier score-comparison form is what oscillated.
+    """
+
+    @staticmethod
+    def _target(x, y, path_length=5.0, camera_gain=1.0, topology="ROOM_L_15"):
+        return FrontierTarget(
+            kind="CAMERA_FRONTIER",
+            target=(x, y),
+            path=((0.0, 0.0), (x, y)),
+            path_length=path_length,
+            laser_gain=0.0,
+            camera_gain=camera_gain,
+            combined_gain=camera_gain,
+            min_clearance=0.4,
+            topology_id=topology,
+        )
+
+    def test_handover_requires_the_active_viewpoint_to_be_observed(self):
+        active, candidate = self._target(2.0, 1.0, 5.0, 1.0), self._target(3.0, 1.0, 5.0, 2.0)
+        # Still plenty left to see -> keep it.
+        self.assertFalse(
+            target_switch_allowed(active, candidate, 30.0, active_remaining=1.0)
+        )
+        self.assertFalse(
+            target_switch_allowed(active, candidate, 30.0, active_remaining=0.9)
+        )
+        # Clearly observed -> the planner may hand over.
+        self.assertTrue(
+            target_switch_allowed(active, candidate, 30.0, active_remaining=0.1)
+        )
+
+    def test_unknown_remaining_information_refuses_the_switch(self):
+        self.assertFalse(
+            target_switch_allowed(
+                self._target(2.0, 1.0), self._target(3.0, 1.0), 30.0,
+                active_remaining=None,
+            )
+        )
+
+    def test_a_longer_detour_is_still_refused_while_unobserved(self):
+        # The path guard is gone, but with the target still unobserved there is
+        # no reason to take a detour at all.
+        self.assertFalse(
+            target_switch_allowed(
+                self._target(2.0, 1.0, 5.0), self._target(20.0, 1.0, 40.0, 9.0),
+                30.0, active_remaining=1.0,
+            )
+        )
+
+    def test_dwell_blocks_an_immediate_switch(self):
+        self.assertFalse(
+            target_switch_allowed(
+                self._target(2.0, 1.0), self._target(3.0, 1.0), 1.0,
+                active_remaining=0.0,
+            )
+        )
+
+    def test_corridor_candidates_are_not_adopted(self):
+        self.assertFalse(
+            target_switch_allowed(
+                self._target(2.0, 1.0), self._target(3.0, 1.0, 5.0, 9.0, "CORRIDOR"),
+                30.0, active_remaining=0.0,
+            )
+        )
+
+    def test_a_room_lock_is_never_switched_out_of(self):
+        self.assertFalse(
+            target_switch_allowed(
+                self._target(2.0, 1.0), self._target(3.0, 1.0, 5.0, 9.0, "ROOM_R_15"),
+                30.0, locked_topology="ROOM_L_15", active_remaining=0.0,
+            )
+        )
+
+    def test_the_same_point_is_not_a_switch(self):
+        self.assertFalse(
+            target_switch_allowed(
+                self._target(2.0, 1.0), self._target(2.0, 1.0, 5.0, 9.0),
+                30.0, active_remaining=0.0,
+            )
+        )
+
+
+class CameraLookAtTest(unittest.TestCase):
+    """The RGB-D viewpoint heading must be an information-gain bearing.
+
+    measured on run90 floor 1: all 61 door-area viewpoints came back with
+    ``look_at == target``, because the centroid of a symmetric unseen region
+    lands on the viewpoint itself.  ``atan2(0, 0)`` then collapsed every heading
+    to 0 rad -- a fixed world axis -- which is exactly the "sideways at the
+    doorway / facing out of the door" orientation the user reported.
+    """
+
+    def _planner_and_grid(self):
+        grid = synthetic_floor()
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0,
+            safety_margin=0.0,
+            navigation_clearance=0.05,
+            forward_depth=24.0,
+            lateral_half_width=9.5,
+        )
+        return planner, grid
+
+    @staticmethod
+    def _yaw(point, centre):
+        return math.atan2(point[1] - centre[1], point[0] - centre[0])
+
+    def test_symmetric_unseen_is_not_degenerate_and_follows_the_preference(self):
+        planner, grid = self._planner_and_grid()
+        unseen = np.ones(grid.data.shape, dtype=bool)
+        centre = (6.0, 1.85)
+        cell = grid.world_to_cell(*centre)
+        look_at = planner._camera_look_at(
+            cell, unseen, grid, preferred_yaw=math.pi / 2.0
+        )
+        self.assertIsNotNone(look_at)
+        # Never the viewpoint itself: that is the degeneracy being fixed.
+        self.assertGreater(math.hypot(look_at[0] - centre[0], look_at[1] - centre[1]), 0.1)
+        # A fully symmetric unseen region must resolve toward the room interior.
+        deviation = abs(
+            math.degrees(
+                math.atan2(
+                    math.sin(self._yaw(look_at, centre) - math.pi / 2.0),
+                    math.cos(self._yaw(look_at, centre) - math.pi / 2.0),
+                )
+            )
+        )
+        self.assertLess(deviation, 30.0)
+
+    def test_a_real_asymmetry_beats_the_preference(self):
+        planner, grid = self._planner_and_grid()
+        unseen = np.zeros(grid.data.shape, dtype=bool)
+        centre = (6.0, 1.85)
+        row, column = grid.world_to_cell(*centre)
+        radius_cells = int(math.ceil(planner.information_radius / grid.resolution))
+        rows, columns = np.indices(unseen.shape)
+        distance = np.hypot(
+            (rows - row) * grid.resolution, (columns - column) * grid.resolution
+        )
+        annulus = (distance >= 1.0) & (distance <= planner.information_radius)
+        # A narrow wedge centred on -x, so the heaviest bearing bin is
+        # unambiguous and the preference cannot win by accident.
+        wedge = np.abs(rows - row) * grid.resolution <= 0.35 * (
+            np.abs(columns - column) * grid.resolution
+        )
+        unseen[annulus & wedge & (columns < column - 1)] = True
+        look_at = planner._camera_look_at(
+            cell=(row, column), camera_unseen=unseen, grid=grid,
+            preferred_yaw=math.pi / 2.0,
+        )
+        self.assertIsNotNone(look_at)
+        yaw = self._yaw(look_at, centre)
+        deviation = abs(
+            math.degrees(math.atan2(math.sin(yaw - math.pi), math.cos(yaw - math.pi)))
+        )
+        self.assertLess(deviation, 30.0)
+
+
+class RobotStartSeedTest(unittest.TestCase):
+    """The route must start in the cell the robot is standing in.
+
+    Seeding A* at the nearest cell above the clearance threshold turned the
+    first leg into a detour to a cell the robot was not standing in whenever it
+    stood near a wall (run107 floor 0: ``path_start_offset`` 1.737 and 2.455 m).
+    The robot is physically in its own cell, so that cell is traversable.
+    """
+
+    @staticmethod
+    def _wall_grid(wall_columns):
+        data = np.zeros((60, 120), dtype=np.int16)
+        data[:, :wall_columns] = 100
+        return GridView(data, 0.1, 0.0, 0.0)
+
+    def test_the_route_starts_in_the_robot_cell_even_below_clearance(self):
+        # Cell column 2 (centre x=0.25) is 0.20 m from the wall, below the
+        # 0.30 m threshold; the old seed was the nearest safe cell at x=0.35.
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0, safety_margin=0.0, navigation_clearance=0.30
+        )
+        path, _length, _clearance = planner.navigation_path(
+            self._wall_grid(1), robot_pose=(0.25, 3.0, 0.0), target=(6.0, 3.0)
+        )
+        self.assertTrue(path)
+        self.assertAlmostEqual(path[0][0], 0.25, delta=0.06)
+        self.assertAlmostEqual(path[0][1], 3.05, delta=0.06)
+        self.assertNotAlmostEqual(path[0][0], 0.35, delta=0.04)
+
+    def test_a_wide_low_clearance_band_is_escaped_from_the_robot_cell(self):
+        # Four wall columns put the robot (centre x=0.45) inside a band that is
+        # entirely below the threshold.  There is no nearest-safe fallback any
+        # more: the 3x3 physical-occupancy window must let the route leave the
+        # robot's own cell without moving the start.
+        planner = TaskCoveragePlanner(
+            robot_radius=0.0, safety_margin=0.0, navigation_clearance=0.30
+        )
+        path, _length, _clearance = planner.navigation_path(
+            self._wall_grid(4), robot_pose=(0.45, 3.0, 0.0), target=(6.0, 3.0)
+        )
+        self.assertTrue(path)
+        self.assertAlmostEqual(path[0][0], 0.45, delta=0.06)
+
+
 class PlannerTest(unittest.TestCase):
+    def test_astar_backwards_walk_breaks_on_cyclic_predecessor(self):
+        """A cyclic predecessor chain must not spin for ever.
+
+        The A* search re-opens states, so ``predecessor`` can end up holding
+        X -> Y -> X.  The unguarded walk never reached the start state and burned
+        a core inside the planning thread; run146 sat still at the ROOM_*_49
+        doorway for the rest of the mission because no plan was ever published
+        again.  A normal chain must still reconstruct exactly as before.
+        """
+        planner = TaskCoveragePlanner()
+        initial = (1, 1, 0)
+        middle = (2, 2, 1)
+        goal = (3, 3, 2)
+        self.assertEqual(
+            planner._reconstruct_path({goal: middle, middle: initial}, initial, goal),
+            ((1, 1), (2, 2), (3, 3)),
+        )
+        self.assertEqual(planner.predecessor_cycle_breaks, 0)
+        # Closed cycle: abandoned, counted, and returned as unroutable.
+        self.assertEqual(
+            planner._reconstruct_path({goal: middle, middle: goal}, initial, goal),
+            (),
+        )
+        self.assertEqual(planner.predecessor_cycle_breaks, 1)
+        # A missing predecessor link is the same defect class.
+        self.assertEqual(planner._reconstruct_path({}, initial, goal), ())
+        self.assertEqual(planner.predecessor_cycle_breaks, 2)
+
     def test_wall_inner_edge_free_space_does_not_merge_real_door_into_wall_length_gap(self):
         resolution = 0.05
         grid = GridView(
@@ -385,22 +708,6 @@ class PlannerTest(unittest.TestCase):
         self.assertEqual(len(near_complete.actionable_portals), 2)
         self.assertTrue(near_complete.front_rooms_complete)
 
-        rear_unlocked = planner.plan(
-            grid,
-            robot_pose=(14.0, 0.0, 0.0),
-            gate_center=(0.0, 0.0),
-            forward_yaw=0.0,
-            camera_seen=np.zeros(grid.data.shape, dtype=bool),
-            camera_target=1.0,
-            confirmed_topologies=[item.topology_id for item in portals],
-            completed_topologies=("ROOM_L_7", "ROOM_R_7"),
-            rear_rooms_unlocked=True,
-        )
-        self.assertEqual(
-            {item.topology_id for item in rear_unlocked.actionable_portals},
-            {"ROOM_L_35", "ROOM_R_35"},
-        )
-
     def test_single_confirmed_door_is_immediately_actionable(self):
         grid = synthetic_floor(include_second_opening=False)
         row0, column0 = grid.world_to_cell(-3.4, 5.0)
@@ -470,6 +777,10 @@ class PlannerTest(unittest.TestCase):
         )
         self.assertEqual(plan.diagnostics["assignment_portal_count"], 1)
         self.assertTrue(plan.targets)
+        # Restored to the validated baseline contract: with nothing else left to
+        # do the planner keeps returning lidar frontiers here.  The wider camera
+        # fallback that replaced this was mine and caused every target-selection
+        # regression of this session, so the original contract is pinned again.
         self.assertTrue(all(item.kind == "LASER_FRONTIER" for item in plan.targets))
 
     def test_completed_physical_door_is_not_redispatched_after_id_drift(self):
@@ -581,7 +892,7 @@ class PlannerTest(unittest.TestCase):
         self.assertTrue(region[grid.world_to_cell(3.5, 4.0)])
         self.assertFalse(region[grid.world_to_cell(17.5, 4.0)])
 
-    def test_door_entry_route_contains_corridor_and_room_staging(self):
+    def test_door_entry_route_crosses_without_corridor_staging(self):
         grid = synthetic_floor()
         row0, column0 = grid.world_to_cell(-3.4, 5.0)
         row1, column1 = grid.world_to_cell(10.5, 9.2)
@@ -612,20 +923,23 @@ class PlannerTest(unittest.TestCase):
         portal = next(
             item for item in portals if item.topology_id == plan.target.topology_id
         )
-        # The executable path must visit the corridor centre at the portal and
-        # then cross the side wall approximately perpendicular to it.
+        # The crossing must reach the room side of the doorway, and it must NOT
+        # stage on the corridor centreline first: that staging waypoint turned
+        # every replan into "enter the room, drive back out to the axis, enter
+        # again" because a robot already inside the room was re-routed through
+        # the corridor centre before the door.
+        room_side = [
+            index
+            for index, point in enumerate(plan.target.path)
+            if abs(point[1]) > 1.6 and abs(point[0] - portal.along) < 0.6
+        ]
         self.assertTrue(
-            any(
-                abs(point[0] - portal.along) < 0.25 and abs(point[1]) < 0.25
-                for point in plan.target.path
-            )
+            room_side, "the crossing route must reach the room side of the door"
         )
-        self.assertTrue(
-            any(
-                abs(point[0] - portal.along) < 0.35
-                and abs(point[1]) > 1.6
-                for point in plan.target.path
-            )
+        crossed_at = room_side[0]
+        self.assertFalse(
+            any(abs(point[1]) < 0.25 for point in plan.target.path[crossed_at:]),
+            "the route must not turn back to the corridor centreline after crossing",
         )
 
     def test_navigation_clearance_is_independent_of_coverage_wall_band(self):

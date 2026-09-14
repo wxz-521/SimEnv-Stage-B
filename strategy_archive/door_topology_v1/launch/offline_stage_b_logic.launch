@@ -1,0 +1,58 @@
+<launch>
+  <arg name="result_file" default="/tmp/simnav_stage_b_result.json"/>
+  <arg name="expected_rooms_per_floor" default="4"/>
+  <param name="use_sim_time" value="true"/>
+
+  <node pkg="simnav" type="single_floor_explorer_node.py" name="single_floor_explorer" output="screen">
+    <param name="corridor_yaw" value="1.57079632679"/>
+    <!-- The offline harness starts inside the corridor; do not apply the
+         real-scene lobby isolation run in this synthetic test. -->
+    <param name="initial_forward_distance" value="0.0"/>
+    <param name="expected_rooms_per_floor" value="$(arg expected_rooms_per_floor)"/>
+    <param name="max_corridor_sweeps" value="1"/>
+    <param name="max_door_attempts" value="2"/>
+    <param name="max_exit_attempts" value="2"/>
+    <param name="minimum_cross_time" value="1.0"/>
+    <param name="inside_room_confirm_duration" value="0.4"/>
+    <param name="max_cross_time" value="14.0"/>
+    <param name="minimum_exit_time" value="0.8"/>
+    <param name="corridor_reacquire_duration" value="0.5"/>
+    <param name="max_exit_time" value="14.0"/>
+    <param name="visited_door_revisit_radius" value="4.0"/>
+    <param name="door_alignment_tolerance" value="0.12"/>
+    <param name="room_robot_radius" value="0.38"/>
+    <param name="room_safety_margin" value="0.04"/>
+    <param name="room_frontier_speed" value="0.45"/>
+    <param name="room_frontier_min_speed" value="0.30"/>
+    <param name="room_frontier_replan_period" value="1.0"/>
+    <param name="room_frontier_target_tolerance" value="0.35"/>
+    <param name="room_frontier_quiet_period" value="2.0"/>
+    <param name="room_frontier_revalidate_margin" value="0.01"/>
+    <!-- Offline logic tests do not provide a synchronized RGB-D stream. -->
+    <param name="camera_coverage_enabled" value="false"/>
+    <param name="room_frontier_cluster_radius" value="0.45"/>
+    <param name="room_frontier_min_cluster_cells" value="3"/>
+    <param name="room_frontier_revisit_radius" value="0.75"/>
+    <param name="room_topology_entry_margin" value="0.35"/>
+    <param name="room_topology_max_depth" value="12.0"/>
+    <param name="room_topology_lateral_limit" value="8.0"/>
+    <param name="room_dead_end_path_threshold" value="1.5"/>
+    <param name="room_minimum_escape_cells" value="12"/>
+    <param name="completion_quiet_period" value="3.0"/>
+    <rosparam param="entrance_gate">[[-1.5, 0.0], [1.5, 0.0]]</rosparam>
+  </node>
+
+  <node pkg="simnav" type="danger_detector_node.py" name="danger_detector" output="screen">
+    <param name="rgb_topic" value="/offline/rgb"/>
+    <param name="depth_topic" value="/offline/depth"/>
+    <param name="camera_info_topic" value="/offline/camera_info"/>
+    <param name="output_file" value="/tmp/simnav_detected_danger.json"/>
+    <param name="debug_output_file" value="/tmp/simnav_detected_danger_debug.json"/>
+  </node>
+
+  <node pkg="simnav" type="offline_stage_b_harness.py" name="offline_stage_b_harness"
+        output="screen" required="true">
+    <param name="result_file" value="$(arg result_file)"/>
+    <param name="sim_timeout" value="360.0"/>
+  </node>
+</launch>

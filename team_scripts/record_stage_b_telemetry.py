@@ -14,6 +14,7 @@ Outputs:
 
 import argparse
 import csv
+import json
 import math
 import os
 import threading
@@ -48,6 +49,19 @@ COLUMNS = (
     "cmd_vx",
     "cmd_wz",
     "elevator_state",
+    # Corridor-frame coordinates of the robot, computed from the explorer's own
+    # gate anchor.  ``gate_lateral`` is what answers "did it enter and come back
+    # out": it crosses the room's doorway lateral value on entry.  Diagnostics
+    # only - nothing consumes these columns.
+    "gate_along",
+    "gate_lateral",
+    "region_lock",
+    "entry_total",
+    # T-E diagnostics: distance from the robot's own pose to the first point of
+    # the path it was just given (A* snaps its start to the nearest traversable
+    # cell), and the run-level ordered doorway-crossing count.  Diagnostics only.
+    "path_start_offset",
+    "entry_seq_len",
 )
 
 
@@ -80,6 +94,11 @@ class TelemetryRecorder:
         self.imu = {}
         self.command = (0.0, 0.0)
         self.elevator_state = None
+        self.gate = None
+        self.region_lock = None
+        self.entry_total = 0
+        self.path_start_offset = None
+        self.entry_seq_len = 0
         self.fall_reported = False
 
         os.makedirs(self.out_dir, exist_ok=True)
@@ -102,9 +121,27 @@ class TelemetryRecorder:
         rospy.Subscriber(
             "/simnav/elevator_status", String, self._elevator_cb, queue_size=10
         )
+        rospy.Subscriber(
+            "/simnav/explorer_status", String, self._explorer_cb, queue_size=2
+        )
         rospy.Timer(rospy.Duration(0.05), self._tick)
 
     # --- inputs -----------------------------------------------------------
+    def _explorer_cb(self, message):
+        """Track the gate anchor, the locked region and the entry counter."""
+        try:
+            payload = json.loads(message.data)
+        except Exception:
+            return
+        gate = payload.get("virtual_isolation_door_source")
+        counts = payload.get("room_entry_counts") or {}
+        with self.lock:
+            self.gate = tuple(gate) if gate else None
+            self.region_lock = payload.get("topology_lock")
+            self.entry_total = int(sum(int(value) for value in counts.values()))
+            self.entry_seq_len = len(payload.get("room_entry_sequence") or [])
+            offset = payload.get("path_start_offset")
+            self.path_start_offset = None if offset is None else float(offset)
     def _source_cb(self, message):
         with self.lock:
             pose = message.pose.pose
@@ -158,6 +195,21 @@ class TelemetryRecorder:
             imu = dict(self.imu)
             command = self.command
             state = self.elevator_state
+            gate = self.gate
+            region_lock = self.region_lock
+            entry_total = self.entry_total
+            path_start_offset = self.path_start_offset
+            entry_seq_len = self.entry_seq_len
+        if gate and len(gate) >= 3:
+            dx = float(source.get("x", float("nan"))) - float(gate[0])
+            dy = float(source.get("y", float("nan"))) - float(gate[1])
+            cosine = math.cos(float(gate[2]))
+            sine = math.sin(float(gate[2]))
+            gate_along = dx * cosine + dy * sine
+            gate_lateral = -dx * sine + dy * cosine
+        else:
+            gate_along = float("nan")
+            gate_lateral = float("nan")
         return (
             round(time.time() - self.start, 3),
             round(now, 3),
@@ -178,11 +230,21 @@ class TelemetryRecorder:
             round(command[0], 4),
             round(command[1], 4),
             state,
+            round(gate_along, 4),
+            round(gate_lateral, 4),
+            region_lock,
+            int(entry_total),
+            (
+                round(float(path_start_offset), 4)
+                if path_start_offset is not None
+                else float("nan")
+            ),
+            int(entry_seq_len),
         )
 
     def _fall_reason(self, row):
         _wall, sim, _sx, _sy, _syaw, _wx, _wy, wz, wroll, wpitch, _wyaw, \
-            iroll, ipitch, _gx, _gy, _gz, _vx, _wz, _state = row
+            iroll, ipitch, _gx, _gy, _gz, _vx, _wz, _state, *_extra = row
         if abs(wroll) > self.fall_roll_limit or abs(wpitch) > self.fall_pitch_limit:
             return "WORLD_ROLLED"
         if abs(iroll) > self.fall_roll_limit or abs(ipitch) > self.fall_pitch_limit:

@@ -3,38 +3,20 @@
   <arg name="corridor_yaw" default="0.0"/>
   <arg name="initial_forward_distance" default="14.5"/>
   <arg name="motion_speed" default="0.60"/>
-  <arg name="transit_speed" default="0.90"/>
   <arg name="danger_early_exit_coverage" default="$(optenv STAGE_B_DANGER_EARLY_EXIT_COVERAGE 0.0)"/>
   <arg name="room_combined_coverage_target" default="0.84"/>
-  <arg name="camera_coverage_target" default="0.85"/>
-  <arg name="combined_coverage_target" default="0.84"/>
-  <arg name="initial_lateral_correction_start" default="0.20"/>
-  <arg name="initial_lateral_correction_gain" default="0.30"/>
-  <arg name="initial_yaw_correction_gain" default="0.45"/>
-  <arg name="initial_max_correction_yaw" default="0.18"/>
-  <arg name="initial_correction_speed" default="0.32"/>
-  <arg name="initial_test_yaw_bias" default="0.0"/>
-  <arg name="initial_test_yaw_bias_distance" default="0.0"/>
-  <arg name="initial_test_post_entry_turn" default="0.0"/>
-  <arg name="initial_test_post_entry_turn_progress" default="2.0"/>
-  <arg name="portal_jamb_length" default="0.25"/>
-  <arg name="portal_jamb_support" default="0.20"/>
+  <arg name="camera_coverage_target" default="$(arg room_combined_coverage_target)"/>
+  <arg name="combined_coverage_target" default="$(arg room_combined_coverage_target)"/>
   <node pkg="simnav" type="coverage_explorer_node.py" name="$(arg node_name)" output="screen">
     <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
     <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
-    <param name="initial_forward_speed" value="0.90"/>
+    <param name="initial_forward_speed" value="0.60"/>
+    <param name="initial_forward_start_speed" value="0.25"/>
+    <param name="initial_forward_ramp_seconds" value="2.0"/>
+    <param name="initial_forward_settle_seconds" value="1.0"/>
     <param name="initial_centering_start_distance" value="10.5"/>
     <param name="elevator_detection_start_distance" value="4.0"/>
     <param name="elevator_detection_end_distance" value="10.5"/>
-    <param name="initial_lateral_correction_start" value="$(arg initial_lateral_correction_start)"/>
-    <param name="initial_lateral_correction_gain" value="$(arg initial_lateral_correction_gain)"/>
-    <param name="initial_yaw_correction_gain" value="$(arg initial_yaw_correction_gain)"/>
-    <param name="initial_max_correction_yaw" value="$(arg initial_max_correction_yaw)"/>
-    <param name="initial_correction_speed" value="$(arg initial_correction_speed)"/>
-    <param name="initial_test_yaw_bias" value="$(arg initial_test_yaw_bias)"/>
-    <param name="initial_test_yaw_bias_distance" value="$(arg initial_test_yaw_bias_distance)"/>
-    <param name="initial_test_post_entry_turn" value="$(arg initial_test_post_entry_turn)"/>
-    <param name="initial_test_post_entry_turn_progress" value="$(arg initial_test_post_entry_turn_progress)"/>
     <param name="virtual_gate_forward_distance" value="10.5"/>
     <param name="task_back_extension" value="0.60"/>
     <param name="task_entry_buffer" value="0.45"/>
@@ -48,8 +30,6 @@
          doorway, a seam leaves almost none (run17: real 4251-8712 eligible
          cells, seams 185-730). -->
     <param name="min_room_interior_cells" value="800"/>
-    <param name="portal_jamb_length" value="$(arg portal_jamb_length)"/>
-    <param name="portal_jamb_support" value="$(arg portal_jamb_support)"/>
     <param name="show_room_virtual_doors" value="true"/>
     <param name="robot_radius" value="0.38"/>
     <param name="safety_margin" value="0.04"/>
@@ -61,21 +41,65 @@
     <param name="frontier_revisit_radius" value="0.70"/>
     <param name="information_radius" value="2.5"/>
     <param name="replan_period" value="1.0"/>
-    <param name="target_replace_min_age" value="4.0"/>
-    <param name="target_replace_gain_ratio" value="1.30"/>
-    <param name="target_replace_stall" value="8.0"/>
+    <!-- Mid-route target handover (⑥) must hold the target this long before it
+         may be replaced.  8 s was triggering too easily (user, 2026-09-14):
+         the robot re-aimed instead of committing to the leg. -->
+    <param name="target_switch_dwell" value="15.0"/>
+    <param name="stalled_replace_gain_ratio" value="0.50"/>
+    <param name="unsafe_path_replan_cycles" value="3"/>
+    <param name="unsafe_path_block_seconds" value="45.0"/>
+    <param name="front_station_match_tolerance" value="2.5"/>
     <param name="room_completion_miss_cycles" value="3"/>
     <param name="station_partner_wait_cycles" value="20"/>
     <param name="room_frontier_wait_cycles" value="0"/>
+    <!-- A room is released only when its coverage target is met AND it has no
+         executable candidate left, so an unmet area is not abandoned the moment
+         the threshold is crossed (observed in RViz as a large camera-unseen
+         region left behind).  The grace bounds the extra work: after this many
+         sim seconds past the target the room is released regardless, so a
+         candidate that can never be cleared cannot hold the floor. -->
+    <param name="room_exhaust_grace_seconds" value="60.0"/>
+    <!-- Only keep working a room that has met its target while a remaining
+         candidate would reveal at least this much new area (m^2).  Stops the
+         robot sweeping marginal wall pockets after the room is done, while
+         still finishing a genuinely large unseen area. -->
+    <param name="room_exhaust_min_gain" value="1.5"/>
+    <!-- false: release a room the moment its target is met, so a lowered target
+         really lowers exploration time.  true: keep sweeping while a candidate
+         worth more than room_exhaust_min_gain remains (use only with a high
+         target, where abandoning a large unseen area was the problem). -->
+    <param name="room_exit_requires_gain" value="false"/>
+    <!-- While the robot is within this |lateral| band of the corridor centre it
+         is inside a doorway crossing: a target swap there produced an in-out
+         shuttle that never entered the room (run38: lateral oscillated between
+         0.27 and 1.27 for ~35 sim s with cmd_vx == 0 most of the time).  A swap
+         is refused inside the band unless the target has stalled. -->
+    <!-- Liveness backstop: with a target held but no motion command for this
+         many seconds, drop the target with a cooldown so the planner chooses
+         something else instead of standing still for ever (run41: 246 s frozen
+         with cmd_vel == (0,0) in 674 of 681 telemetry samples). -->
+    <param name="stuck_target_seconds" value="5.0"/>
+    <param name="stuck_target_cooldown_seconds" value="120.0"/>
+    <param name="collision_block_seconds" value="45.0"/>
+    <param name="transit_timeout_seconds" value="60.0"/>
+    <!-- A floor may only latch once the robot is on the corridor centreline
+         within this tolerance (the doorway alone used to satisfy the old
+         corridor_half_width - 0.10 test) and its own cell is navigable on the
+         despeckled map the elevator transition plans on.  run29 latched at a
+         0.22 m-clearance cell inside the door frame and the transition then
+         faulted with ROUTE_UNREACHABLE. -->
+    <param name="floor_end_corridor_tolerance" value="0.35"/>
+    <!-- Both the waypoint bearing and a camera frontier's look_at can flip
+         while the robot turns towards them, and the control law rotates on the
+         spot until the error is small, so a flipping bearing pinned the robot
+         in place (run33: 8.4 sim seconds just inside ROOM_L_15 with cmd_vx == 0
+         and cmd_wz alternating +0.65/-0.65).  After this long without a new
+         best error, drive while turning instead. -->
+    <param name="max_align_seconds" value="8.0"/>
+    <param name="align_progress_error" value="0.30"/>
     <param name="portal_confirm_cycles" value="1"/>
-    <param name="door_search_enabled" value="false"/>
-    <param name="door_search_step_distance" value="1.0"/>
-    <param name="door_search_wait_cycles" value="3"/>
-    <param name="door_search_front_limit" value="3.0"/>
-    <param name="door_search_rear_limit" value="3.0"/>
     <param name="minimum_room_stations" value="1"/>
     <param name="front_station_search_limit" value="10.0"/>
-    <param name="rear_transit_distance" value="12.0"/>
     <param name="room_combined_coverage_target" value="$(arg room_combined_coverage_target)"/>
     <param name="expected_rooms_per_floor" value="4"/>
     <param name="far_room_first" value="false"/>
@@ -83,12 +107,31 @@
     <param name="heading_tolerance" value="0.25"/>
     <param name="motion_stop_distance" value="0.48"/>
     <param name="motion_speed" value="$(arg motion_speed)"/>
-    <param name="transit_speed" value="$(arg transit_speed)"/>
+    <param name="max_linear_speed" value="0.60"/>
+    <param name="interior_retry_limit" value="3"/>
+    <param name="transit_speed_cap" value="0.35"/>
+    <param name="transit_jamb_zone" value="2.0"/>
     <param name="turn_speed" value="0.65"/>
     <param name="laser_coverage_target" value="0.95"/>
     <param name="camera_coverage_target" value="$(arg camera_coverage_target)"/>
     <param name="combined_coverage_target" value="$(arg combined_coverage_target)"/>
     <param name="camera_weight" value="0.95"/>
+    <!-- Gain and coverage are separate objectives.  camera_weight (0.95) keeps
+         answering "has the floor been observed" for the completion gate; the
+         gain answers "which viewpoint is worth the travel" and deliberately
+         gives laser/map knowledge a real share, so the camera gets driven to
+         somewhere it can actually see.  The target kind stays CAMERA_FRONTIER.
+         Set target_rank_mode=nearest to fall back to the historical
+         nearest-frontier ranking. -->
+    <param name="gain_camera_weight" value="0.95"/>   <!-- 回退：0.50 -> 0.95 等于恢复原增益口径 -->
+    <!-- Collapse the 0.5 m longitudinal bins of ONE physical doorway into a
+         single candidate, so a door cannot be re-approached through a slightly
+         different bin (measured: front-R entered three times).  The comparison
+         is per side along the corridor axis, never plain Cartesian distance:
+         a left/right pair sits only ~2.2 m apart and both rooms are real.
+         0 disables the merge. -->
+    <param name="portal_merge_radius" value="0.0"/>   <!-- 回退：暂停候选门合并 -->
+    <param name="target_rank_mode" value="nearest"/>   <!-- 回退：gain_efficiency 会为最大未看斑跑到房间最远端 -->
     <param name="completion_stable_duration" value="3.0"/>
     <param name="sphere_min_hits" value="3"/>
     <param name="danger_candidate_min_hits" value="1"/>

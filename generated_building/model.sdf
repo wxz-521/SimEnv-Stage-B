@@ -1081,96 +1081,96 @@
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_0_desk">
-      <pose>-7.0000 17.9225 0.4500 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_0_desk_collision">
+    <link name="floor_0_room_0_sofa_a">
+      <pose>-7.0000 11.8075 0.4500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_0_sofa_a_collision">
         <geometry>
           <box>
-            <size>1.5000 0.7000 0.7500</size>
+            <size>1.8000 0.8000 0.8000</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_0_desk_visual">
+      <visual name="floor_0_room_0_sofa_a_visual">
         <geometry>
           <box>
-            <size>1.5000 0.7000 0.7500</size>
+            <size>1.8000 0.8000 0.8000</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.54 0.43 0.34 1</ambient>
-          <diffuse>0.54 0.43 0.34 1</diffuse>
+          <ambient>0.24 0.36 0.54 1</ambient>
+          <diffuse>0.24 0.36 0.54 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_0_chair">
-      <pose>-7.0000 17.0225 0.2800 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_0_chair_collision">
+    <link name="floor_0_room_0_sofa_b">
+      <pose>-3.6000 11.8075 0.4500 0.0000 0.0000 3.1400</pose>
+      <collision name="floor_0_room_0_sofa_b_collision">
         <geometry>
           <box>
-            <size>0.5500 0.5500 0.5500</size>
+            <size>1.8000 0.8000 0.8000</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_0_chair_visual">
+      <visual name="floor_0_room_0_sofa_b_visual">
         <geometry>
           <box>
-            <size>0.5500 0.5500 0.5500</size>
+            <size>1.8000 0.8000 0.8000</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.30 0.30 0.34 1</ambient>
-          <diffuse>0.30 0.30 0.34 1</diffuse>
+          <ambient>0.24 0.36 0.54 1</ambient>
+          <diffuse>0.24 0.36 0.54 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_0_cabinet">
-      <pose>-3.6000 11.8075 0.9000 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_0_cabinet_collision">
+    <link name="floor_0_room_0_coffee_table">
+      <pose>-5.3000 14.8650 0.2500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_0_coffee_table_collision">
         <geometry>
           <box>
-            <size>0.6000 1.0000 1.8000</size>
+            <size>0.8000 0.6000 0.4000</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_0_cabinet_visual">
+      <visual name="floor_0_room_0_coffee_table_visual">
         <geometry>
           <box>
-            <size>0.6000 1.0000 1.8000</size>
+            <size>0.8000 0.6000 0.4000</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.72 0.72 0.74 1</ambient>
-          <diffuse>0.72 0.72 0.74 1</diffuse>
+          <ambient>0.60 0.48 0.34 1</ambient>
+          <diffuse>0.60 0.48 0.34 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_0_side_table">
-      <pose>-3.6000 17.9225 0.3200 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_0_side_table_collision">
+    <link name="floor_0_room_0_bookshelf">
+      <pose>-3.6000 17.9225 0.8500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_0_bookshelf_collision">
         <geometry>
           <box>
-            <size>0.7000 0.7000 0.4500</size>
+            <size>0.4500 1.2000 1.7000</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_0_side_table_visual">
+      <visual name="floor_0_room_0_bookshelf_visual">
         <geometry>
           <box>
-            <size>0.7000 0.7000 0.4500</size>
+            <size>0.4500 1.2000 1.7000</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.52 0.42 0.33 1</ambient>
-          <diffuse>0.52 0.42 0.33 1</diffuse>
+          <ambient>0.50 0.40 0.30 1</ambient>
+          <diffuse>0.50 0.40 0.30 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
     <link name="floor_0_room_0_planter">
-      <pose>-5.3000 11.8075 0.4500 0.0000 0.0000 0.0000</pose>
+      <pose>-7.0000 17.9225 0.4500 0.0000 0.0000 0.0000</pose>
       <collision name="floor_0_room_0_planter_collision">
         <geometry>
           <box>
@@ -1191,63 +1191,41 @@
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_1_table">
-      <pose>5.3000 14.8650 0.4500 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_1_table_collision">
+    <link name="floor_0_room_1_desk">
+      <pose>3.6000 17.9225 0.4500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_1_desk_collision">
         <geometry>
           <box>
-            <size>2.2000 1.0000 0.7500</size>
+            <size>1.5000 0.7000 0.7500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_1_table_visual">
+      <visual name="floor_0_room_1_desk_visual">
         <geometry>
           <box>
-            <size>2.2000 1.0000 0.7500</size>
+            <size>1.5000 0.7000 0.7500</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.50 0.38 0.28 1</ambient>
-          <diffuse>0.50 0.38 0.28 1</diffuse>
+          <ambient>0.54 0.43 0.34 1</ambient>
+          <diffuse>0.54 0.43 0.34 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_1_chair_north">
-      <pose>5.3000 17.9225 0.2800 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_1_chair_north_collision">
+    <link name="floor_0_room_1_chair">
+      <pose>3.6000 17.0225 0.2800 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_1_chair_collision">
         <geometry>
           <box>
-            <size>0.5000 0.5000 0.5500</size>
+            <size>0.5500 0.5500 0.5500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_1_chair_north_visual">
+      <visual name="floor_0_room_1_chair_visual">
         <geometry>
           <box>
-            <size>0.5000 0.5000 0.5500</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.30 0.30 0.34 1</ambient>
-          <diffuse>0.30 0.30 0.34 1</diffuse>
-        </material>
-      </visual>
-      <gravity>false</gravity>
-    </link>
-    <link name="floor_0_room_1_chair_south">
-      <pose>5.3000 11.8075 0.2800 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_1_chair_south_collision">
-        <geometry>
-          <box>
-            <size>0.5000 0.5000 0.5500</size>
-          </box>
-        </geometry>
-      </collision>
-      <visual name="floor_0_room_1_chair_south_visual">
-        <geometry>
-          <box>
-            <size>0.5000 0.5000 0.5500</size>
+            <size>0.5500 0.5500 0.5500</size>
           </box>
         </geometry>
         <material>
@@ -1257,68 +1235,68 @@
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_1_chair_west">
-      <pose>3.1500 14.8650 0.2800 0.0000 0.0000 1.5700</pose>
-      <collision name="floor_0_room_1_chair_west_collision">
+    <link name="floor_0_room_1_cabinet">
+      <pose>7.0000 11.8075 0.9000 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_1_cabinet_collision">
         <geometry>
           <box>
-            <size>0.5000 0.5000 0.5500</size>
+            <size>0.6000 1.0000 1.8000</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_1_chair_west_visual">
+      <visual name="floor_0_room_1_cabinet_visual">
         <geometry>
           <box>
-            <size>0.5000 0.5000 0.5500</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.30 0.30 0.34 1</ambient>
-          <diffuse>0.30 0.30 0.34 1</diffuse>
-        </material>
-      </visual>
-      <gravity>false</gravity>
-    </link>
-    <link name="floor_0_room_1_chair_east">
-      <pose>7.4500 14.8650 0.2800 0.0000 0.0000 1.5700</pose>
-      <collision name="floor_0_room_1_chair_east_collision">
-        <geometry>
-          <box>
-            <size>0.5000 0.5000 0.5500</size>
-          </box>
-        </geometry>
-      </collision>
-      <visual name="floor_0_room_1_chair_east_visual">
-        <geometry>
-          <box>
-            <size>0.5000 0.5000 0.5500</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.30 0.30 0.34 1</ambient>
-          <diffuse>0.30 0.30 0.34 1</diffuse>
-        </material>
-      </visual>
-      <gravity>false</gravity>
-    </link>
-    <link name="floor_0_room_1_credenza">
-      <pose>7.0000 11.8075 0.4500 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_1_credenza_collision">
-        <geometry>
-          <box>
-            <size>1.2000 0.4500 0.9000</size>
-          </box>
-        </geometry>
-      </collision>
-      <visual name="floor_0_room_1_credenza_visual">
-        <geometry>
-          <box>
-            <size>1.2000 0.4500 0.9000</size>
+            <size>0.6000 1.0000 1.8000</size>
           </box>
         </geometry>
         <material>
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
+        </material>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_0_room_1_side_table">
+      <pose>7.0000 17.9225 0.3200 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_1_side_table_collision">
+        <geometry>
+          <box>
+            <size>0.7000 0.7000 0.4500</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_0_room_1_side_table_visual">
+        <geometry>
+          <box>
+            <size>0.7000 0.7000 0.4500</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.52 0.42 0.33 1</ambient>
+          <diffuse>0.52 0.42 0.33 1</diffuse>
+        </material>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_0_room_1_planter">
+      <pose>5.3000 11.8075 0.4500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_1_planter_collision">
+        <geometry>
+          <box>
+            <size>0.4500 0.4500 0.9000</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_0_room_1_planter_visual">
+        <geometry>
+          <box>
+            <size>0.4500 0.4500 0.9000</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.28 0.46 0.30 1</ambient>
+          <diffuse>0.28 0.46 0.30 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
@@ -1433,90 +1411,134 @@
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_3_rack_a">
-      <pose>3.6000 31.9525 0.9000 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_3_rack_a_collision">
+    <link name="floor_0_room_3_table">
+      <pose>5.3000 28.8950 0.4500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_3_table_collision">
         <geometry>
           <box>
-            <size>0.8000 1.6000 1.8000</size>
+            <size>2.2000 1.0000 0.7500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_3_rack_a_visual">
+      <visual name="floor_0_room_3_table_visual">
         <geometry>
           <box>
-            <size>0.8000 1.6000 1.8000</size>
+            <size>2.2000 1.0000 0.7500</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.56 0.57 0.60 1</ambient>
-          <diffuse>0.56 0.57 0.60 1</diffuse>
+          <ambient>0.50 0.38 0.28 1</ambient>
+          <diffuse>0.50 0.38 0.28 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_3_rack_b">
-      <pose>7.0000 31.9525 0.9000 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_3_rack_b_collision">
+    <link name="floor_0_room_3_chair_north">
+      <pose>5.3000 31.9525 0.2800 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_3_chair_north_collision">
         <geometry>
           <box>
-            <size>0.8000 1.6000 1.8000</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_3_rack_b_visual">
+      <visual name="floor_0_room_3_chair_north_visual">
         <geometry>
           <box>
-            <size>0.8000 1.6000 1.8000</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.56 0.57 0.60 1</ambient>
-          <diffuse>0.56 0.57 0.60 1</diffuse>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_3_rack_c">
-      <pose>3.6000 25.8375 0.9000 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_3_rack_c_collision">
+    <link name="floor_0_room_3_chair_south">
+      <pose>5.3000 25.8375 0.2800 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_3_chair_south_collision">
         <geometry>
           <box>
-            <size>0.8000 1.5000 1.8000</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_3_rack_c_visual">
+      <visual name="floor_0_room_3_chair_south_visual">
         <geometry>
           <box>
-            <size>0.8000 1.5000 1.8000</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.56 0.57 0.60 1</ambient>
-          <diffuse>0.56 0.57 0.60 1</diffuse>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_0_room_3_pallet">
-      <pose>7.0000 25.8375 0.1200 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_0_room_3_pallet_collision">
+    <link name="floor_0_room_3_chair_west">
+      <pose>3.1500 28.8950 0.2800 0.0000 0.0000 1.5700</pose>
+      <collision name="floor_0_room_3_chair_west_collision">
         <geometry>
           <box>
-            <size>1.0000 1.0000 0.2400</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_0_room_3_pallet_visual">
+      <visual name="floor_0_room_3_chair_west_visual">
         <geometry>
           <box>
-            <size>1.0000 1.0000 0.2400</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.56 0.44 0.28 1</ambient>
-          <diffuse>0.56 0.44 0.28 1</diffuse>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
+        </material>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_0_room_3_chair_east">
+      <pose>7.4500 28.8950 0.2800 0.0000 0.0000 1.5700</pose>
+      <collision name="floor_0_room_3_chair_east_collision">
+        <geometry>
+          <box>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_0_room_3_chair_east_visual">
+        <geometry>
+          <box>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
+        </material>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_0_room_3_credenza">
+      <pose>7.0000 25.8375 0.4500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_0_room_3_credenza_collision">
+        <geometry>
+          <box>
+            <size>1.2000 0.4500 0.9000</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_0_room_3_credenza_visual">
+        <geometry>
+          <box>
+            <size>1.2000 0.4500 0.9000</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.72 0.72 0.74 1</ambient>
+          <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
       </visual>
       <gravity>false</gravity>
@@ -1540,6 +1562,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1562,6 +1585,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1584,6 +1608,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1606,6 +1631,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1628,6 +1654,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1650,6 +1677,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1672,6 +1700,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1694,6 +1723,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1716,6 +1746,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1738,6 +1769,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1760,6 +1792,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1782,6 +1815,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1804,6 +1838,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1826,6 +1861,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1848,6 +1884,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1870,6 +1907,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1892,6 +1930,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1914,6 +1953,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1936,6 +1976,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1958,6 +1999,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -1980,6 +2022,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2002,6 +2045,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2024,6 +2068,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2046,6 +2091,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2068,6 +2114,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2090,6 +2137,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2112,6 +2160,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2134,6 +2183,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2156,6 +2206,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2178,6 +2229,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2200,6 +2252,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2222,6 +2275,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2244,6 +2298,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2266,6 +2321,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2288,6 +2344,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2310,6 +2367,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2332,6 +2390,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2354,6 +2413,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2376,6 +2436,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2398,6 +2459,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2420,6 +2482,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2442,6 +2505,7 @@
           <ambient>0.72 0.72 0.73 1</ambient>
           <diffuse>0.72 0.72 0.73 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2464,6 +2528,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2486,6 +2551,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2508,6 +2574,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2530,116 +2597,145 @@
           <ambient>0.20 0.20 0.24 1</ambient>
           <diffuse>0.20 0.20 0.24 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_1_room_0_desk">
-      <pose>-7.0000 17.9225 3.0500 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_1_room_0_desk_collision">
+    <link name="floor_1_room_0_table">
+      <pose>-5.3000 14.8650 3.0500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_1_room_0_table_collision">
         <geometry>
           <box>
-            <size>1.5000 0.7000 0.7500</size>
+            <size>2.2000 1.0000 0.7500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_1_room_0_desk_visual">
+      <visual name="floor_1_room_0_table_visual">
         <geometry>
           <box>
-            <size>1.5000 0.7000 0.7500</size>
+            <size>2.2000 1.0000 0.7500</size>
           </box>
         </geometry>
         <material>
-          <ambient>0.54 0.43 0.34 1</ambient>
-          <diffuse>0.54 0.43 0.34 1</diffuse>
+          <ambient>0.50 0.38 0.28 1</ambient>
+          <diffuse>0.50 0.38 0.28 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_1_room_0_chair">
-      <pose>-7.0000 17.0225 2.8800 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_1_room_0_chair_collision">
+    <link name="floor_1_room_0_chair_north">
+      <pose>-5.3000 17.9225 2.8800 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_1_room_0_chair_north_collision">
         <geometry>
           <box>
-            <size>0.5500 0.5500 0.5500</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_1_room_0_chair_visual">
+      <visual name="floor_1_room_0_chair_north_visual">
         <geometry>
           <box>
-            <size>0.5500 0.5500 0.5500</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
         <material>
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
-    <link name="floor_1_room_0_cabinet">
-      <pose>-3.6000 11.8075 3.5000 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_1_room_0_cabinet_collision">
+    <link name="floor_1_room_0_chair_south">
+      <pose>-5.3000 11.8075 2.8800 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_1_room_0_chair_south_collision">
         <geometry>
           <box>
-            <size>0.6000 1.0000 1.8000</size>
+            <size>0.5000 0.5000 0.5500</size>
           </box>
         </geometry>
       </collision>
-      <visual name="floor_1_room_0_cabinet_visual">
+      <visual name="floor_1_room_0_chair_south_visual">
         <geometry>
           <box>
-            <size>0.6000 1.0000 1.8000</size>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
+        </material>
+        <transparency>0.80</transparency>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_1_room_0_chair_west">
+      <pose>-7.4500 14.8650 2.8800 0.0000 0.0000 1.5700</pose>
+      <collision name="floor_1_room_0_chair_west_collision">
+        <geometry>
+          <box>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_1_room_0_chair_west_visual">
+        <geometry>
+          <box>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
+        </material>
+        <transparency>0.80</transparency>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_1_room_0_chair_east">
+      <pose>-3.1500 14.8650 2.8800 0.0000 0.0000 1.5700</pose>
+      <collision name="floor_1_room_0_chair_east_collision">
+        <geometry>
+          <box>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_1_room_0_chair_east_visual">
+        <geometry>
+          <box>
+            <size>0.5000 0.5000 0.5500</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.30 0.30 0.34 1</ambient>
+          <diffuse>0.30 0.30 0.34 1</diffuse>
+        </material>
+        <transparency>0.80</transparency>
+      </visual>
+      <gravity>false</gravity>
+    </link>
+    <link name="floor_1_room_0_credenza">
+      <pose>-3.6000 11.8075 3.0500 0.0000 0.0000 0.0000</pose>
+      <collision name="floor_1_room_0_credenza_collision">
+        <geometry>
+          <box>
+            <size>1.2000 0.4500 0.9000</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="floor_1_room_0_credenza_visual">
+        <geometry>
+          <box>
+            <size>1.2000 0.4500 0.9000</size>
           </box>
         </geometry>
         <material>
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
-      </visual>
-      <gravity>false</gravity>
-    </link>
-    <link name="floor_1_room_0_side_table">
-      <pose>-3.6000 17.9225 2.9200 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_1_room_0_side_table_collision">
-        <geometry>
-          <box>
-            <size>0.7000 0.7000 0.4500</size>
-          </box>
-        </geometry>
-      </collision>
-      <visual name="floor_1_room_0_side_table_visual">
-        <geometry>
-          <box>
-            <size>0.7000 0.7000 0.4500</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.52 0.42 0.33 1</ambient>
-          <diffuse>0.52 0.42 0.33 1</diffuse>
-        </material>
-      </visual>
-      <gravity>false</gravity>
-    </link>
-    <link name="floor_1_room_0_planter">
-      <pose>-5.3000 11.8075 3.0500 0.0000 0.0000 0.0000</pose>
-      <collision name="floor_1_room_0_planter_collision">
-        <geometry>
-          <box>
-            <size>0.4500 0.4500 0.9000</size>
-          </box>
-        </geometry>
-      </collision>
-      <visual name="floor_1_room_0_planter_visual">
-        <geometry>
-          <box>
-            <size>0.4500 0.4500 0.9000</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.28 0.46 0.30 1</ambient>
-          <diffuse>0.28 0.46 0.30 1</diffuse>
-        </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2662,6 +2758,7 @@
           <ambient>0.54 0.43 0.34 1</ambient>
           <diffuse>0.54 0.43 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2684,6 +2781,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2706,6 +2804,7 @@
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2728,6 +2827,7 @@
           <ambient>0.52 0.42 0.33 1</ambient>
           <diffuse>0.52 0.42 0.33 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2750,6 +2850,7 @@
           <ambient>0.28 0.46 0.30 1</ambient>
           <diffuse>0.28 0.46 0.30 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2772,6 +2873,7 @@
           <ambient>0.24 0.36 0.54 1</ambient>
           <diffuse>0.24 0.36 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2794,6 +2896,7 @@
           <ambient>0.24 0.36 0.54 1</ambient>
           <diffuse>0.24 0.36 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2816,6 +2919,7 @@
           <ambient>0.60 0.48 0.34 1</ambient>
           <diffuse>0.60 0.48 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2838,6 +2942,7 @@
           <ambient>0.50 0.40 0.30 1</ambient>
           <diffuse>0.50 0.40 0.30 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2860,6 +2965,7 @@
           <ambient>0.28 0.46 0.30 1</ambient>
           <diffuse>0.28 0.46 0.30 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2882,6 +2988,7 @@
           <ambient>0.54 0.43 0.34 1</ambient>
           <diffuse>0.54 0.43 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2904,6 +3011,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2926,6 +3034,7 @@
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2948,6 +3057,7 @@
           <ambient>0.52 0.42 0.33 1</ambient>
           <diffuse>0.52 0.42 0.33 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2970,6 +3080,7 @@
           <ambient>0.28 0.46 0.30 1</ambient>
           <diffuse>0.28 0.46 0.30 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -2992,6 +3103,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3014,6 +3126,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3036,6 +3149,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3058,6 +3172,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3080,6 +3195,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3102,6 +3218,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3124,6 +3241,7 @@
           <ambient>0.76 0.76 0.77 1</ambient>
           <diffuse>0.76 0.76 0.77 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3146,6 +3264,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3168,6 +3287,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3190,6 +3310,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3212,6 +3333,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3234,6 +3356,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3256,6 +3379,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3278,6 +3402,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3300,6 +3425,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3322,6 +3448,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3344,6 +3471,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3366,6 +3494,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3388,6 +3517,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3410,6 +3540,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3432,6 +3563,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3454,6 +3586,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3476,6 +3609,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3498,6 +3632,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3520,6 +3655,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3542,6 +3678,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3564,6 +3701,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3586,6 +3724,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3608,6 +3747,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3630,6 +3770,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3652,6 +3793,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3674,6 +3816,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3696,6 +3839,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3718,6 +3862,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3740,6 +3885,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3762,6 +3908,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3784,6 +3931,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3806,6 +3954,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3828,6 +3977,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3850,6 +4000,7 @@
           <ambient>0.86 0.86 0.88 1</ambient>
           <diffuse>0.86 0.86 0.88 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3872,6 +4023,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3894,6 +4046,7 @@
           <ambient>0.72 0.72 0.73 1</ambient>
           <diffuse>0.72 0.72 0.73 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3916,6 +4069,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3938,6 +4092,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3960,6 +4115,7 @@
           <ambient>0.50 0.51 0.54 1</ambient>
           <diffuse>0.50 0.51 0.54 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -3982,6 +4138,7 @@
           <ambient>0.20 0.20 0.24 1</ambient>
           <diffuse>0.20 0.20 0.24 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4004,6 +4161,7 @@
           <ambient>0.54 0.43 0.34 1</ambient>
           <diffuse>0.54 0.43 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4026,6 +4184,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4048,6 +4207,7 @@
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4070,6 +4230,7 @@
           <ambient>0.52 0.42 0.33 1</ambient>
           <diffuse>0.52 0.42 0.33 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4092,6 +4253,7 @@
           <ambient>0.28 0.46 0.30 1</ambient>
           <diffuse>0.28 0.46 0.30 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4114,6 +4276,7 @@
           <ambient>0.56 0.57 0.60 1</ambient>
           <diffuse>0.56 0.57 0.60 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4136,6 +4299,7 @@
           <ambient>0.56 0.57 0.60 1</ambient>
           <diffuse>0.56 0.57 0.60 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4158,6 +4322,7 @@
           <ambient>0.56 0.57 0.60 1</ambient>
           <diffuse>0.56 0.57 0.60 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4180,6 +4345,7 @@
           <ambient>0.56 0.44 0.28 1</ambient>
           <diffuse>0.56 0.44 0.28 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4202,6 +4368,7 @@
           <ambient>0.54 0.43 0.34 1</ambient>
           <diffuse>0.54 0.43 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4224,6 +4391,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4246,6 +4414,7 @@
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4268,6 +4437,7 @@
           <ambient>0.52 0.42 0.33 1</ambient>
           <diffuse>0.52 0.42 0.33 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4290,6 +4460,7 @@
           <ambient>0.28 0.46 0.30 1</ambient>
           <diffuse>0.28 0.46 0.30 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4312,6 +4483,7 @@
           <ambient>0.50 0.38 0.28 1</ambient>
           <diffuse>0.50 0.38 0.28 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4334,6 +4506,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4356,6 +4529,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4378,6 +4552,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4400,6 +4575,7 @@
           <ambient>0.30 0.30 0.34 1</ambient>
           <diffuse>0.30 0.30 0.34 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4422,6 +4598,7 @@
           <ambient>0.72 0.72 0.74 1</ambient>
           <diffuse>0.72 0.72 0.74 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4466,6 +4643,7 @@
           <ambient>0.68 0.68 0.70 1</ambient>
           <diffuse>0.68 0.68 0.70 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4488,6 +4666,7 @@
           <ambient>0.68 0.68 0.70 1</ambient>
           <diffuse>0.68 0.68 0.70 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4972,6 +5151,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -4994,6 +5174,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5016,6 +5197,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5038,6 +5220,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5060,6 +5243,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5082,6 +5266,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5104,6 +5289,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5126,6 +5312,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5148,6 +5335,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5170,6 +5358,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5192,6 +5381,7 @@
           <ambient>0.68 0.68 0.70 1</ambient>
           <diffuse>0.68 0.68 0.70 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5214,6 +5404,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5236,6 +5427,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5258,6 +5450,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5280,6 +5473,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5302,6 +5496,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5324,6 +5519,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5346,6 +5542,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5368,6 +5565,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5390,6 +5588,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5412,6 +5611,7 @@
           <ambient>0.64 0.64 0.66 1</ambient>
           <diffuse>0.64 0.64 0.66 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>
@@ -5434,6 +5634,7 @@
           <ambient>0.72 0.74 0.76 1</ambient>
           <diffuse>0.72 0.74 0.76 1</diffuse>
         </material>
+        <transparency>0.80</transparency>
       </visual>
       <gravity>false</gravity>
     </link>

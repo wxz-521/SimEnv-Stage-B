@@ -15,6 +15,15 @@ from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 
 
+from map_floors_core import (
+    ensure_floor_grid,
+    floor_map_report,
+    height_band_is_sane,
+    observed_floor_level,
+    point_floor_mask,
+)
+
+
 def trace_ray_free(grid, start, end):
     """Mark unknown cells along a sensor ray as free without erasing walls."""
     ray = np.zeros_like(grid, dtype=np.uint8)
@@ -35,11 +44,41 @@ class LioOccupancyNode:
         self.point_stride = max(1, int(rospy.get_param("~point_stride", 4)))
         self.frame_id = rospy.get_param("~frame_id", "simnav_map")
         self.lock = threading.Lock()
-        self.grid = np.full((self.height, self.width), -1, dtype=np.int8)
+        # One 2D grid per floor, separated by height, all retained.  The old
+        # node kept a single grid and cleared it on every floor change, so a
+        # floor's map (and therefore its topology) only existed while the robot
+        # was standing on it.
+        self.grids = {}
+        self.active_floor = 0
+        self.grid, _created = ensure_floor_grid(
+            self.grids, 0, (self.height, self.width), -1, np.int8
+        )
+        self.robot_z_samples = {0: []}
+        self.floor_height = float(rospy.get_param("~floor_height", 2.6))
+        self.floor_publish_period = max(
+            0.5, float(rospy.get_param("~floor_publish_period", 2.0))
+        )
+        if not height_band_is_sane(
+            self.min_height, self.max_height, self.floor_height
+        ):
+            rospy.logwarn(
+                "Height band [%.2f, %.2f] m reaches an adjacent floor level "
+                "(floor_height=%.2f m); geometry could leak between floor maps.",
+                self.min_height,
+                self.max_height,
+                self.floor_height,
+            )
         self.robot = None
         self.alignment = None
         self.stamp = rospy.Time()
         self.publisher = rospy.Publisher("/map", OccupancyGrid, queue_size=1, latch=True)
+        # Per-floor maps, so a consumer can address a floor by height instead of
+        # relying on publication order.
+        self.floor_publishers = {}
+        self.floors_publisher = rospy.Publisher(
+            "/simnav/map_floors", String, queue_size=1, latch=True
+        )
+        self.last_floor_publish = rospy.Time(0)
         rospy.Subscriber("/simnav/odom", Odometry, self._odom_callback, queue_size=20)
         rospy.Subscriber(
             "/simnav/lio_map_transform",
@@ -64,12 +103,22 @@ class LioOccupancyNode:
             floor_index = int(json.loads(message.data)["floor_index"])
         except (KeyError, TypeError, ValueError):
             return
-        if floor_index <= 0:
-            return
         with self.lock:
-            self.grid.fill(-1)
+            if floor_index == self.active_floor:
+                return
+            self.grid, created = ensure_floor_grid(
+                self.grids, floor_index, (self.height, self.width), -1, np.int8
+            )
+            self.active_floor = int(floor_index)
+            self.robot_z_samples.setdefault(int(floor_index), [])
             self.stamp = rospy.Time.now()
-        rospy.loginfo("Cleared live occupancy cache for floor %d", floor_index)
+            retained = sorted(self.grids)
+        rospy.loginfo(
+            "Occupancy map switched to floor %d (%s); retained floors: %s",
+            int(floor_index),
+            "new" if created else "restored",
+            retained,
+        )
 
     def _cell(self, x, y):
         return (
@@ -84,6 +133,11 @@ class LioOccupancyNode:
                 message.pose.pose.position.y,
                 message.pose.pose.position.z,
             )
+            samples = self.robot_z_samples.setdefault(int(self.active_floor), [])
+            # Bounded history: the level estimate only needs the visit's lowest
+            # height, and an unbounded list would grow for the whole run.
+            if len(samples) < 2000:
+                samples.append(float(self.robot[2]))
 
     def _alignment_callback(self, message):
         quaternion = message.transform.rotation
@@ -117,9 +171,12 @@ class LioOccupancyNode:
         homogeneous = np.ones((raw.shape[0], 4), dtype=float)
         homogeneous[:, :3] = raw
         transformed = np.matmul(alignment, homogeneous.T).T[:, :3]
-        height_mask = np.logical_and(
-            transformed[:, 2] - robot[2] >= self.min_height,
-            transformed[:, 2] - robot[2] <= self.max_height,
+        with self.lock:
+            floor_level = observed_floor_level(
+                self.robot_z_samples.get(int(self.active_floor), ())
+            )
+        height_mask = point_floor_mask(
+            transformed[:, 2], floor_level, self.min_height, self.max_height
         )
         points = []
         for point in transformed[height_mask]:
@@ -139,10 +196,7 @@ class LioOccupancyNode:
             self.grid[np.asarray(rows), np.asarray(columns)] = 100
             self.stamp = message.header.stamp
 
-    def _publish(self, _event):
-        with self.lock:
-            grid = self.grid.copy()
-            stamp = self.stamp if self.stamp != rospy.Time() else rospy.Time.now()
+    def _grid_message(self, grid, stamp):
         message = OccupancyGrid()
         message.header.stamp = stamp
         message.header.frame_id = self.frame_id
@@ -153,7 +207,56 @@ class LioOccupancyNode:
         message.info.origin.position.y = self.origin_y
         message.info.origin.orientation.w = 1.0
         message.data = grid.reshape(-1).tolist()
-        self.publisher.publish(message)
+        return message
+
+    def _publish(self, _event):
+        now = rospy.Time.now()
+        with self.lock:
+            grids = {key: value.copy() for key, value in self.grids.items()}
+            active = int(self.active_floor)
+            samples = {
+                key: tuple(value) for key, value in self.robot_z_samples.items()
+            }
+            stamp = self.stamp if self.stamp != rospy.Time() else now
+            publish_all = (now - self.last_floor_publish).to_sec() >= (
+                self.floor_publish_period
+            )
+            if publish_all:
+                self.last_floor_publish = now
+        # ``/map`` keeps its original meaning for existing consumers: the map of
+        # the floor the robot is on.
+        self.publisher.publish(self._grid_message(grids[active], stamp))
+        if publish_all:
+            for floor_index, grid in grids.items():
+                publisher = self.floor_publishers.get(floor_index)
+                if publisher is None:
+                    publisher = rospy.Publisher(
+                        "/map/floor_{}".format(int(floor_index)),
+                        OccupancyGrid,
+                        queue_size=1,
+                        latch=True,
+                    )
+                    self.floor_publishers[floor_index] = publisher
+                publisher.publish(self._grid_message(grid, stamp))
+            level = {
+                key: observed_floor_level(value) for key, value in samples.items()
+            }
+            report = floor_map_report(
+                grids, active, level, self.floor_height
+            )
+            self.floors_publisher.publish(
+                String(
+                    data=json.dumps(
+                        {
+                            "active_floor": active,
+                            "floor_height": self.floor_height,
+                            "height_band": [self.min_height, self.max_height],
+                            "floors": report,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            )
 
 
 if __name__ == "__main__":

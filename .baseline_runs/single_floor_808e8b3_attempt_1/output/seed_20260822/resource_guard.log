@@ -1,0 +1,3 @@
+Stage B resource guard: ROS_PORT=11320 GAZEBO_PORT=11345 CPU_LIST=0-5
+Stage B locomotion policy: /workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/logs/policy_act_inference_stair.pt
+Stage B plane policy: /workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/logs/policy_act_inference_plane.pt

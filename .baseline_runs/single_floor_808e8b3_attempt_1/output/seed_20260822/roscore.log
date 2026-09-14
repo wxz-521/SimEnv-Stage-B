@@ -1,0 +1,36 @@
+[31mWARNING: disk usage in log directory [/tmp/simenv-home/.ros/log] is over 1GB.
+It's recommended that you use the 'rosclean' command.[0m
+[31m================================================================================REQUIRED process [master] has died!
+process has died [pid 3895956, exit code -15, cmd rosmaster --core -p 11320 -w 3 __log:=/tmp/simenv-home/.ros/log/e93f1378-a97c-11f1-9f7c-5084929e6cf9/master.log].
+log file: /tmp/simenv-home/.ros/log/e93f1378-a97c-11f1-9f7c-5084929e6cf9/master*.log
+Initiating shutdown!
+================================================================================[0m
+... logging to /tmp/simenv-home/.ros/log/e93f1378-a97c-11f1-9f7c-5084929e6cf9/roslaunch-xiejiaxue-System-Product-Name-3895940.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;roscore
+[1mstarted roslaunch server http://xiejiaxue-System-Product-Name:43945/[0m
+ros_comm version 1.17.4
+
+
+SUMMARY
+========
+
+PARAMETERS
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+
+NODES
+
+auto-starting new master
+[1mprocess[master]: started with pid [3895956][0m
+[1mROS_MASTER_URI=http://xiejiaxue-System-Product-Name:11320/[0m
+]2;roscore http://xiejiaxue-System-Product-Name:11320/
+[1msetting /run_id to e93f1378-a97c-11f1-9f7c-5084929e6cf9[0m
+[1mprocess[rosout-1]: started with pid [3895972][0m
+started core service [/rosout]
+[rosout-1] killing on exit
+[master] killing on exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

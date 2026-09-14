@@ -1,0 +1,104 @@
+Multi thread started 
+p_pre->lidar_type 1
+~~~~/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/FAST_LIO/ doesn't exist
+[33m[WARN] [1788655091.343888285, 2.628000000]: No point, skip this scan!
+[0m
+[pcl::VoxelGrid::applyFilter] Leaf size is too small for the input dataset. Integer indices would overflow.[pcl::VoxelGrid::applyFilter] Leaf size is too small for the input dataset. Integer indices would overflow.[33m[WARN] [1788658393.832216993, 221.408000000]: catch sig 2[0m
+[0m[INFO] [1788655089.344294012]: Initializing nodelet with 24 worker threads.[0m
+[0m[INFO] [1788655107.732166067, 3.720000000]: Got a subscriber to scan, starting subscriber to pointcloud[0m
+[31mWARNING: disk usage in log directory [/tmp/simenv-home/.ros/log] is over 1GB.
+It's recommended that you use the 'rosclean' command.[0m
+... logging to /tmp/simenv-home/.ros/log/18cf37c2-a98b-11f1-9c8d-5084929e6cf9/roslaunch-xiejiaxue-System-Product-Name-3906327.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/simnav/launch/stage_b_localization.launch
+[1mstarted roslaunch server http://xiejiaxue-System-Product-Name:39915/[0m
+
+SUMMARY
+========
+
+PARAMETERS
+ * /common/imu_topic: /livox/imu
+ * /common/lid_topic: /livox/lidar2
+ * /common/time_offset_lidar_to_imu: 0.0
+ * /common/time_sync_en: False
+ * /cube_side_length: 120.0
+ * /feature_extract_enable: False
+ * /filter_size_map: 0.25
+ * /filter_size_surf: 0.25
+ * /lio_health_monitor/cloud_topic: /cloud_registered
+ * /lio_health_monitor/minimum_effective_points: 5
+ * /lio_occupancy/point_stride: 1
+ * /localization_bridge/command_response_scale: 0.95
+ * /localization_bridge/command_timeout: 0.35
+ * /localization_bridge/max_corridor_constraint: 3.0
+ * /localization_bridge/max_loop_correction: 1.0
+ * /localization_bridge/max_loop_rotation: 0.12
+ * /localization_bridge/minimum_motion_fraction: 0.2
+ * /localization_bridge/team_scene_info: /workspace/SimEnv...
+ * /map_views/mapping_frequency: 2.0
+ * /map_views/small_gap_kernel: 5
+ * /mapping/acc_cov: 0.02
+ * /mapping/b_acc_cov: 0.0001
+ * /mapping/b_gyr_cov: 0.0001
+ * /mapping/det_range: 40.0
+ * /mapping/extrinsic_R: [1, 0, 0, 0, 1, 0...
+ * /mapping/extrinsic_T: [0.011, 0.02329, ...
+ * /mapping/extrinsic_est_en: False
+ * /mapping/fov_degree: 360
+ * /mapping/gyr_cov: 0.02
+ * /max_iteration: 3
+ * /pcd_save/interval: -1
+ * /pcd_save/pcd_save_en: False
+ * /point_filter_num: 1
+ * /preprocess/blind: 0.3
+ * /preprocess/lidar_type: 1
+ * /preprocess/scan_line: 4
+ * /preprocess/scan_rate: 10
+ * /preprocess/timestamp_unit: 3
+ * /publish/dense_publish_en: False
+ * /publish/path_en: False
+ * /publish/scan_bodyframe_pub_en: False
+ * /publish/scan_publish_en: True
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+ * /runtime_pos_log_enable: False
+ * /simnav_cloud_to_scan/angle_increment: 0.00872665
+ * /simnav_cloud_to_scan/angle_max: 3.14159265
+ * /simnav_cloud_to_scan/angle_min: -3.14159265
+ * /simnav_cloud_to_scan/concurrency_level: 1
+ * /simnav_cloud_to_scan/max_height: 1.5
+ * /simnav_cloud_to_scan/min_height: 0.08
+ * /simnav_cloud_to_scan/range_max: 12.0
+ * /simnav_cloud_to_scan/range_min: 0.2
+ * /simnav_cloud_to_scan/scan_time: 0.1
+ * /simnav_cloud_to_scan/target_frame: base
+ * /simnav_cloud_to_scan/transform_tolerance: 0.05
+ * /simnav_cloud_to_scan/use_inf: True
+
+NODES
+  /
+    fast_lio (fast_lio/fastlio_mapping)
+    lio_health_monitor (simnav/lio_health_monitor_node.py)
+    lio_occupancy (simnav/lio_occupancy_node.py)
+    localization_bridge (simnav/lio_localization_bridge_node.py)
+    map_views (simnav/map_views_node.py)
+    simnav_cloud_to_scan (pointcloud_to_laserscan/pointcloud_to_laserscan_node)
+
+[1mROS_MASTER_URI=http://127.0.0.1:11320[0m
+]2;/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/simnav/launch/stage_b_localization.launch http://127.0.0.1:11320
+[1mprocess[simnav_cloud_to_scan-1]: started with pid [3906410][0m
+[1mprocess[fast_lio-2]: started with pid [3906411][0m
+[1mprocess[lio_health_monitor-3]: started with pid [3906412][0m
+[1mprocess[localization_bridge-4]: started with pid [3906418][0m
+[1mprocess[lio_occupancy-5]: started with pid [3906419][0m
+[1mprocess[map_views-6]: started with pid [3906420][0m
+[map_views-6] killing on exit
+[lio_occupancy-5] killing on exit
+[localization_bridge-4] killing on exit
+[lio_health_monitor-3] killing on exit
+[fast_lio-2] killing on exit
+[simnav_cloud_to_scan-1] killing on exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

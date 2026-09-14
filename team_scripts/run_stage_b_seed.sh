@@ -329,7 +329,12 @@ wait_for_topic /exploration_map 120
 
 if [ "$START_RVIZ" = "1" ]; then
   if [ -n "${DISPLAY:-}" ] && command -v rviz >/dev/null 2>&1; then
-    "${RUN_PREFIX[@]}" setsid rviz -d "$RVIZ_CONFIG" > "$RUN_DIR/rviz.log" 2>&1 &
+    # RViz needs the robot description on its package path: a1_description lives
+    # under src/unitree_guide/unitree_ros/robots and is also exported by the
+    # isolated devel space.  Without these the model fails to load and RViz
+    # exits with rospack errors, which is what happened in run73.
+    ROS_PACKAGE_PATH="$WORKSPACE_DIR/src:$WORKSPACE_DIR/src/unitree_guide/unitree_ros/robots:/tmp/simenv-autonomy-devel-isolated/share:${ROS_PACKAGE_PATH:-}" \
+      "${RUN_PREFIX[@]}" setsid rviz -d "$RVIZ_CONFIG" > "$RUN_DIR/rviz.log" 2>&1 &
     RVIZ_PID=$!
     echo "RViz started with config $RVIZ_CONFIG (pid=$RVIZ_PID)" >> "$RUN_DIR/resource_guard.log"
   else

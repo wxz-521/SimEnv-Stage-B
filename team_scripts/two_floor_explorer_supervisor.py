@@ -59,19 +59,59 @@ class Supervisor:
         rospy.Subscriber("/simnav/elevator_status", String, self.elevator_callback, queue_size=5)
         rospy.on_shutdown(self.stop_explorer)
 
+    def _kill_leftover_explorers(self):
+        """Make sure no other coverage_explorer_node.py survives a handover.
+
+        ``stop_explorer`` terminates the ``roslaunch`` that owns the node, and
+        roslaunch needs a real shutdown to reap its children.  When that takes
+        longer than the 8 s budget it is SIGKILLed, which leaves the
+        ``coverage_explorer`` child ORPHANED and still publishing /cmd_vel and
+        /simnav/explorer_status - nobody's child any more, so nothing notices.
+        run152 ended up with two explorers alive at once (one of them still on
+        the previous floor's context) and the floor-2 explorer gone, which reads
+        as "the third floor never really boarded".
+
+        The pattern is written so it cannot match this command's own argv.
+        """
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", "coverage_explorer_node.p[y]"],
+                check=False,
+            )
+        except OSError:
+            pass
+
     def start_explorer(self, floor_index):
-        self.stop_explorer()
+        with self.lock:
+            if self.process is not None and self.process.poll() is None:
+                if int(floor_index) == int(self.floor_index):
+                    # Same floor asked for twice (both the floor_complete and the
+                    # elevator callback can fire for one transition): keep the
+                    # explorer that is already running instead of starting a
+                    # second one.
+                    return
+            self.stop_explorer()
+            self._kill_leftover_explorers()
+            self._spawn_explorer(floor_index)
+
+    def _spawn_explorer(self, floor_index):
         command = [
             "roslaunch", "simnav", "stage_b_floor_explorer.launch",
             "node_name:=coverage_explorer",
             "room_combined_coverage_target:={:.3f}".format(
                 self.room_coverage_target
             ),
+            # One source for all three thresholds.  They used to differ (the
+            # room target was overridden to 0.55 for tests while the camera and
+            # combined targets stayed at the 0.85/0.84 launch defaults), so a
+            # room could satisfy "leave the room" yet still fail "room complete"
+            # and the planner immediately re-dispatched a viewpoint inside it --
+            # the observed "it exits, then plans inside the room again".
             "camera_coverage_target:={:.3f}".format(
-                self.camera_coverage_target
+                self.room_coverage_target
             ),
             "combined_coverage_target:={:.3f}".format(
-                self.combined_coverage_target
+                self.room_coverage_target
             ),
             "motion_speed:={:.3f}".format(self.motion_speed),
             "initial_test_yaw_bias:={:.4f}".format(self.initial_test_yaw_bias),
@@ -86,18 +126,34 @@ class Supervisor:
             ),
         ]
         if int(floor_index) > 0:
-            # The transition node has already used A* to place the robot just
-            # inside the mapped corridor.  Skip only the outdoor/lobby transit;
-            # all doorway and room exploration behavior remains identical.
-            command.append("initial_forward_distance:=0.0")
+            # The transit has one job on an upper floor: sweep both FRONT
+            # doorways into the map before exploration starts.
+            #
+            # Measured on run126 floor 1 (2026-09-14): the explorer's anchor is
+            # at along ~1.4 m (it starts after the lift node drove out to the
+            # corridor point), and the front doors are at along 7.4 m.  The old
+            # 9.00 m therefore ended at along ~10.4 m - about 3 m PAST the front
+            # doors - which is the "keeps driving forward, too far" behaviour.
+            # 6.0 m lands on the front doorways; raise it toward 7 if the doors
+            # need more margin, and keep it well below the zone split (~17.5 m).
+            command.append(
+                "initial_forward_distance:={:.2f}".format(
+                    float(os.environ.get("STAGE_B_UPPER_FLOOR_FORWARD", "6.00"))
+                )
+            )
         self.process = subprocess.Popen(command)
         self.floor_index = int(floor_index)
-        rospy.loginfo("Started frozen floor explorer for floor %d", self.floor_index)
+        rospy.loginfo(
+            "Started frozen floor explorer for floor %d (roslaunch pid %d)",
+            self.floor_index,
+            int(self.process.pid),
+        )
 
     def stop_explorer(self):
         process = self.process
         self.process = None
         if process is None or process.poll() is not None:
+            self._kill_leftover_explorers()
             return
         process.terminate()
         try:
@@ -105,6 +161,9 @@ class Supervisor:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=3.0)
+        # Whatever roslaunch managed to reap, the node must not survive it: an
+        # orphaned explorer keeps driving the robot (see _kill_leftover_explorers).
+        self._kill_leftover_explorers()
 
     def complete_callback(self, message):
         if not message.data:

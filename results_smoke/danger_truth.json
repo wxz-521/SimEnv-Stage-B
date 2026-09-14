@@ -1,0 +1,206 @@
+{
+  "schema": "competition_danger_truth_v1",
+  "seed": 20260940,
+  "building": {
+    "model_name": "generated_building",
+    "floor_count": 3,
+    "floor_heights": [
+      0.0,
+      2.6,
+      5.2
+    ],
+    "footprint": {
+      "width": 20.0,
+      "length": 36.0
+    }
+  },
+  "source_rules": {
+    "danger": "red sphere",
+    "distractors": [
+      "red box",
+      "green sphere"
+    ],
+    "placement": "room interior only; avoids walls, furniture, source overlap, and room door keep-out areas"
+  },
+  "danger_sources": [
+    {
+      "id": 0,
+      "model_name": "danger_red_sphere_00",
+      "position": [
+        3.767,
+        13.855,
+        5.35
+      ],
+      "floor_index": 2,
+      "room_id": "floor_2_room_1",
+      "color": "red",
+      "shape": "sphere",
+      "is_danger": true,
+      "radius": 0.15
+    },
+    {
+      "id": 2,
+      "model_name": "danger_red_sphere_01",
+      "position": [
+        -3.598,
+        19.99,
+        0.15
+      ],
+      "floor_index": 0,
+      "room_id": "floor_0_room_0",
+      "color": "red",
+      "shape": "sphere",
+      "is_danger": true,
+      "radius": 0.15
+    },
+    {
+      "id": 5,
+      "model_name": "danger_red_sphere_02",
+      "position": [
+        -1.893,
+        34.423,
+        2.75
+      ],
+      "floor_index": 1,
+      "room_id": "floor_1_room_2",
+      "color": "red",
+      "shape": "sphere",
+      "is_danger": true,
+      "radius": 0.15
+    },
+    {
+      "id": 6,
+      "model_name": "danger_red_sphere_03",
+      "position": [
+        5.282,
+        22.778,
+        2.75
+      ],
+      "floor_index": 1,
+      "room_id": "floor_1_room_3",
+      "color": "red",
+      "shape": "sphere",
+      "is_danger": true,
+      "radius": 0.15
+    },
+    {
+      "id": 7,
+      "model_name": "danger_red_sphere_04",
+      "position": [
+        -4.78,
+        32.006,
+        0.15
+      ],
+      "floor_index": 0,
+      "room_id": "floor_0_room_2",
+      "color": "red",
+      "shape": "sphere",
+      "is_danger": true,
+      "radius": 0.15
+    },
+    {
+      "id": 10,
+      "model_name": "danger_red_sphere_05",
+      "position": [
+        -8.466,
+        26.708,
+        2.75
+      ],
+      "floor_index": 1,
+      "room_id": "floor_1_room_2",
+      "color": "red",
+      "shape": "sphere",
+      "is_danger": true,
+      "radius": 0.15
+    }
+  ],
+  "distraction_sources": [
+    {
+      "id": 1,
+      "model_name": "distractor_green_sphere_00",
+      "position": [
+        -7.506,
+        19.088,
+        5.35
+      ],
+      "floor_index": 2,
+      "room_id": "floor_2_room_0",
+      "color": "green",
+      "shape": "sphere",
+      "is_danger": false,
+      "radius": 0.15
+    },
+    {
+      "id": 3,
+      "model_name": "distractor_green_sphere_01",
+      "position": [
+        6.484,
+        35.04,
+        2.75
+      ],
+      "floor_index": 1,
+      "room_id": "floor_1_room_3",
+      "color": "green",
+      "shape": "sphere",
+      "is_danger": false,
+      "radius": 0.15
+    },
+    {
+      "id": 4,
+      "model_name": "distractor_red_box_02",
+      "position": [
+        8.492,
+        25.629,
+        2.75
+      ],
+      "floor_index": 1,
+      "room_id": "floor_1_room_3",
+      "color": "red",
+      "shape": "box",
+      "is_danger": false,
+      "size": [
+        0.3,
+        0.3,
+        0.3
+      ]
+    },
+    {
+      "id": 8,
+      "model_name": "distractor_red_box_03",
+      "position": [
+        -8.664,
+        32.318,
+        5.35
+      ],
+      "floor_index": 2,
+      "room_id": "floor_2_room_2",
+      "color": "red",
+      "shape": "box",
+      "is_danger": false,
+      "size": [
+        0.3,
+        0.3,
+        0.3
+      ]
+    },
+    {
+      "id": 9,
+      "model_name": "distractor_red_box_04",
+      "position": [
+        -7.051,
+        29.022,
+        2.75
+      ],
+      "floor_index": 1,
+      "room_id": "floor_1_room_2",
+      "color": "red",
+      "shape": "box",
+      "is_danger": false,
+      "size": [
+        0.3,
+        0.3,
+        0.3
+      ]
+    }
+  ]
+}

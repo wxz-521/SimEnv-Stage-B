@@ -1,2 +1,2 @@
 - setup-file:
-    local-name: /home/ros/Guoyulun/Competition/SimEnv/devel/setup.sh
+    local-name: /workspace/SimEnv/devel/setup.sh

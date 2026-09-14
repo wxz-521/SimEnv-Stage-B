@@ -35,9 +35,25 @@
     <param name="route_unreachable_timeout" value="60.0"/>
     <param name="route_open_loop_grace" value="6.0"/>
     <param name="route_accept_distance" value="1.2"/>
-    <param name="motion_speed" value="0.90"/>
-    <param name="crossing_speed" value="0.28"/>
+    <param name="motion_speed" value="0.60"/>
+    <param name="max_linear_speed" value="0.60"/>
+    <!-- The car doorway has a real 6 cm threshold spanning the whole opening.
+         Measured with team_scripts/elevator_only_test.sh: with the step-trained
+         gait policy 0.45 m/s crossed it 3/3 while 0.35 m/s failed, and with the
+         flat-ground policy 0.45 m/s crossed only 1/3. -->
+    <param name="crossing_speed" value="0.45"/>
     <param name="lobby_approach_speed" value="0.45"/>
+    <!-- Known car-door geometry, world frame: [x, y, yaw, width] with the yaw
+         pointing through the doorway into the car (from generated_building/
+         elevator_config.yaml: door plane x=1.65, car centred on y=2.60, 1.40 m
+         clear opening - the same numbers elevator_only_test.sh passes as
+         _elevator_door).  The map-derived portal is the 3.50 m LOBBY opening and
+         its centre was 0.41 m off the real door on floor 1, which made the return
+         entry clip the jamb and ride from outside the car (run152). -->
+    <param name="elevator_door" value="[1.65, 2.60, 0.0, 1.40]"/>
+    <!-- How far past the door plane the robot must be before a ride starts. -->
+    <param name="elevator_door_inset" value="0.35"/>
+    <param name="entry_outside_retry_limit" value="2"/>
     <param name="elevator_approach_tolerance" value="0.80"/>
     <param name="navigation_clearance" value="0.30"/>
     <param name="preferred_clearance" value="0.42"/>

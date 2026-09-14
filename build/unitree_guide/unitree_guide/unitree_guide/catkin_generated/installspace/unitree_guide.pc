@@ -1,4 +1,4 @@
-prefix=/home/ros/Guoyulun/Competition/SimEnv/install
+prefix=/workspace/SimEnv/install
 
 Name: unitree_guide
 Description: Description of unitree_guide

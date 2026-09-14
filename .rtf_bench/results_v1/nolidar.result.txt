@@ -1,0 +1,1 @@
+tag=nolidar livox=0 realsense=1 controllers=0 samples=39 rtf_median=1.000 rtf_max=1.000 sim=35.78 real=46.37

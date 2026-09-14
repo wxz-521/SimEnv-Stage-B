@@ -1,0 +1,110 @@
+watching /simnav/explorer_status (interval=1.0s)
+sim=    5.59  CHG topology_region            -> LOBBY_TRANSIT
+sim=    5.59  CHG last_plan_reason           -> NOT_READY
+sim=    5.59  CHG completed_topologies       -> ()
+sim=    5.59  CHG candidate_topologies       -> ()
+sim=    5.59  CHG actionable_portals         -> ()
+sim=    5.59  CHG completed_front_sides      -> ()
+sim=    5.59  CHG front_station_topologies   -> ()
+sim=    5.59  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=    6.59  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=    7.59  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=    8.66  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=    9.66  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   10.69  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   11.71  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   12.77  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   13.77  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   14.80  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   15.81  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   16.87  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   17.90  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   18.94  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   19.95  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   20.95  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   21.96  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   22.96  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   23.99  reg=LOBBY_TRANSIT            lock=None         tgt=None          /None         cov=0.000/0.000/0.000 comb=0.550 rooms=0 act=0 cand=0 portals=0
+sim=   25.71  CHG topology_region            -> CORRIDOR
+sim=   25.71  CHG active_target_kind         -> LASER_FRONTIER
+sim=   25.71  CHG active_target_topology     -> CORRIDOR
+sim=   25.71  CHG last_plan_reason           -> TARGET
+sim=   25.71  CHG candidate_topologies       -> ('CORRIDOR', 'ROOM_L_1', 'ROOM_R_15')
+sim=   25.71  CHG actionable_portals         -> ('ROOM_L_15', 'ROOM_R_15', 'ROOM_R_30', 'ROOM_R_42')
+sim=   25.71  CHG front_station_topologies   -> ('ROOM_L_15', 'ROOM_R_15')
+sim=   25.71  ROOM COVERAGE ROOM_L_15      laser=0.040  camera=0.008  combined=0.009  target=0.550 cells=11110
+sim=   25.71  ROOM COVERAGE ROOM_R_15      laser=0.036  camera=0.021  combined=0.022  target=0.550 cells=8086
+sim=   25.71  ROOM COVERAGE ROOM_R_30      laser=0.086  camera=0.000  combined=0.004  target=0.550 cells=5075
+sim=   25.71  ROOM COVERAGE ROOM_R_42      laser=0.002  camera=0.000  combined=0.000  target=0.550 cells=8293
+sim=   25.71  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.079/0.016/0.019 comb=0.550 rooms=0 act=4 cand=3 portals=10
+sim=   27.71  CHG actionable_portals         -> ('ROOM_L_15', 'ROOM_R_15', 'ROOM_R_34', 'ROOM_R_42')
+sim=   27.71  ROOM COVERAGE ROOM_R_15      laser=0.059  camera=0.025  combined=0.027  target=0.550 cells=8693
+sim=   27.71  ROOM COVERAGE ROOM_R_34      laser=0.077  camera=0.000  combined=0.004  target=0.550 cells=4998
+sim=   27.71  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.086/0.020/0.023 comb=0.550 rooms=0 act=4 cand=3 portals=9
+sim=   28.71  CHG actionable_portals         -> ('ROOM_L_15', 'ROOM_R_15', 'ROOM_R_34', 'ROOM_R_42', 'ROOM_R_55')
+sim=   28.71  ROOM COVERAGE ROOM_R_55      laser=0.000  camera=0.000  combined=0.000  target=0.550 cells=8580
+sim=   28.71  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.088/0.021/0.024 comb=0.550 rooms=0 act=5 cand=3 portals=9
+sim=   29.71  CHG candidate_topologies       -> ('CORRIDOR', 'ROOM_L_1', 'ROOM_L_15', 'ROOM_R_15')
+sim=   29.71  ROOM COVERAGE ROOM_L_15      laser=0.104  camera=0.010  combined=0.014  target=0.550 cells=10696
+sim=   29.71  ROOM COVERAGE ROOM_R_15      laser=0.059  camera=0.038  combined=0.039  target=0.550 cells=8685
+sim=   29.71  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.093/0.023/0.027 comb=0.550 rooms=0 act=5 cand=4 portals=8
+sim=   30.72  ROOM COVERAGE ROOM_R_15      laser=0.063  camera=0.070  combined=0.069  target=0.550 cells=8652
+sim=   30.72  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.108/0.029/0.033 comb=0.550 rooms=0 act=5 cand=4 portals=8
+sim=   32.61  CHG actionable_portals         -> ('ROOM_L_15', 'ROOM_R_15', 'ROOM_R_34', 'ROOM_R_42', 'ROOM_R_50', 'ROOM_R_55')
+sim=   32.61  ROOM COVERAGE ROOM_L_15      laser=0.340  camera=0.010  combined=0.027  target=0.550 cells=9906
+sim=   32.61  ROOM COVERAGE ROOM_R_15      laser=0.491  camera=0.124  combined=0.143  target=0.550 cells=7741
+sim=   32.61  ROOM COVERAGE ROOM_R_34      laser=0.178  camera=0.000  combined=0.009  target=0.550 cells=4592
+sim=   32.61  ROOM COVERAGE ROOM_R_50      laser=0.000  camera=0.000  combined=0.000  target=0.550 cells=2407
+sim=   32.61  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.202/0.038/0.047 comb=0.550 rooms=0 act=6 cand=4 portals=8
+sim=   33.71  ROOM COVERAGE ROOM_R_15      laser=0.645  camera=0.263  combined=0.282  target=0.550 cells=7388
+sim=   33.71  reg=CORRIDOR                 lock=None         tgt=LASER_FRONTIER/CORRIDOR     cov=0.221/0.056/0.065 comb=0.550 rooms=0 act=6 cand=4 portals=8
+sim=   34.71  CHG topology_region            -> ROOM_APPROACHING
+sim=   34.71  CHG topology_lock              -> ROOM_R_15
+sim=   34.71  CHG active_target_topology     -> ROOM_R_15
+sim=   34.71  ROOM COVERAGE ROOM_R_15      laser=0.751  camera=0.292  combined=0.315  target=0.550 cells=7332
+sim=   34.71  reg=ROOM_APPROACHING         lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.235/0.060/0.069 comb=0.550 rooms=0 act=6 cand=4 portals=8
+sim=   36.61  CHG topology_region            -> ROOM_EXPLORING
+sim=   36.61  CHG candidate_topologies       -> ('ROOM_R_1', 'ROOM_R_15', 'ROOM_R_30')
+sim=   36.61  CHG actionable_portals         -> ('ROOM_R_15',)
+sim=   36.61  ROOM COVERAGE ROOM_R_15      laser=0.902  camera=0.305  combined=0.335  target=0.550 cells=8608
+sim=   36.61  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.261/0.069/0.078 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   38.61  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.274/0.070/0.080 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   39.71  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.281/0.080/0.090 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   40.71  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.282/0.084/0.094 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   41.71  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.284/0.090/0.100 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   42.71  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.289/0.091/0.101 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   44.71  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.296/0.093/0.103 comb=0.550 rooms=0 act=1 cand=3 portals=9
+sim=   45.71  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.296/0.093/0.103 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   47.62  ROOM COVERAGE ROOM_R_15      laser=0.914  camera=0.333  combined=0.362  target=0.550 cells=8553
+sim=   47.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.296/0.096/0.106 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   48.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.297/0.096/0.106 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   49.62  ROOM COVERAGE ROOM_R_15      laser=0.917  camera=0.347  combined=0.375  target=0.550 cells=8543
+sim=   49.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=LASER_FRONTIER/ROOM_R_15    cov=0.297/0.098/0.108 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   51.61  CHG topology_region            -> ROOM_APPROACHING
+sim=   51.61  CHG active_target_kind         -> CAMERA_FRONTIER
+sim=   51.61  ROOM COVERAGE ROOM_R_15      laser=0.931  camera=0.516  combined=0.536  target=0.550 cells=8439
+sim=   51.61  reg=ROOM_APPROACHING         lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.298/0.124/0.133 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   52.61  CHG topology_region            -> ROOM_EXPLORING
+sim=   52.61  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.124/0.133 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   53.61  ROOM COVERAGE ROOM_R_15      laser=0.932  camera=0.528  combined=0.549  target=0.550 cells=8377
+sim=   53.61  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.296/0.124/0.133 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   54.61  ROOM COVERAGE ROOM_R_15      laser=0.938  camera=0.543  combined=0.563  target=0.550 cells=8364  >= target
+sim=   54.61  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.126/0.135 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   55.61  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.127/0.135 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   56.62  ROOM COVERAGE ROOM_R_15      laser=0.942  camera=0.600  combined=0.617  target=0.550 cells=8342  >= target
+sim=   56.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.135/0.143 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   57.62  ROOM COVERAGE ROOM_R_15      laser=0.946  camera=0.630  combined=0.646  target=0.550 cells=8334  >= target
+sim=   57.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.139/0.147 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   58.68  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.139/0.147 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   60.68  CHG topology_region            -> ROOM_APPROACHING
+sim=   60.68  reg=ROOM_APPROACHING         lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.138/0.146 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   62.62  CHG topology_region            -> ROOM_EXPLORING
+sim=   62.62  ROOM COVERAGE ROOM_R_15      laser=0.967  camera=0.642  combined=0.658  target=0.550 cells=8087  >= target
+sim=   62.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.298/0.139/0.147 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   64.62  ROOM COVERAGE ROOM_R_15      laser=0.968  camera=0.738  combined=0.750  target=0.550 cells=8075  >= target
+sim=   64.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.298/0.153/0.160 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   65.63  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.298/0.154/0.161 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   67.62  ROOM COVERAGE ROOM_R_15      laser=0.968  camera=0.769  combined=0.779  target=0.550 cells=8060  >= target
+sim=   67.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.298/0.158/0.165 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   68.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.158/0.165 comb=0.550 rooms=0 act=1 cand=3 portals=8
+sim=   69.62  reg=ROOM_EXPLORING           lock=ROOM_R_15    tgt=CAMERA_FRONTIER/ROOM_R_15    cov=0.297/0.158/0.165 comb=0.550 rooms=0 act=1 cand=3 portals=8

@@ -1,0 +1,7 @@
+[0m[INFO] [1788659389.214124112]: Initializing nodelet with 24 worker threads.[0m
+Error in XmlRpcClient::writeRequest: write error (Connection refused).
+Multi thread started 
+p_pre->lidar_type 1
+~~~~/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/FAST_LIO/ doesn't exist
+[33m[WARN] [1788659391.353189737, 2.744000000]: No point, skip this scan!
+[0m

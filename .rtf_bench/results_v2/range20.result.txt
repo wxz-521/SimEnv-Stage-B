@@ -1,0 +1,1 @@
+tag=range20 livox=1 realsense=1 controllers=0 samples=4 rtf_median=0.080 rtf_max=0.080 sim=0.91 real=29.51

@@ -67,14 +67,14 @@ set(building_generator_interfaces_CONFIG_INCLUDED TRUE)
 
 # set variables for source/devel/install prefixes
 if("FALSE" STREQUAL "TRUE")
-  set(building_generator_interfaces_SOURCE_PREFIX /home/ros/Guoyulun/Competition/SimEnv/src/building_generator_interfaces)
-  set(building_generator_interfaces_DEVEL_PREFIX /home/ros/Guoyulun/Competition/SimEnv/devel)
+  set(building_generator_interfaces_SOURCE_PREFIX /workspace/SimEnv/src/building_generator_interfaces)
+  set(building_generator_interfaces_DEVEL_PREFIX /workspace/SimEnv/devel)
   set(building_generator_interfaces_INSTALL_PREFIX "")
   set(building_generator_interfaces_PREFIX ${building_generator_interfaces_DEVEL_PREFIX})
 else()
   set(building_generator_interfaces_SOURCE_PREFIX "")
   set(building_generator_interfaces_DEVEL_PREFIX "")
-  set(building_generator_interfaces_INSTALL_PREFIX /home/ros/Guoyulun/Competition/SimEnv/install)
+  set(building_generator_interfaces_INSTALL_PREFIX /workspace/SimEnv/install)
   set(building_generator_interfaces_PREFIX ${building_generator_interfaces_INSTALL_PREFIX})
 endif()
 
@@ -156,7 +156,7 @@ foreach(library ${libraries})
     set(lib_path "")
     set(lib "${library}-NOTFOUND")
     # since the path where the library is found is returned we have to iterate over the paths manually
-    foreach(path /home/ros/Guoyulun/Competition/SimEnv/install/lib;/home/ros/Guoyulun/Competition/SimEnv/devel/lib;/opt/ros/noetic/lib)
+    foreach(path /workspace/SimEnv/install/lib;/workspace/SimEnv/devel/lib;/opt/ros/noetic/lib)
       find_library(lib ${library}
         PATHS ${path}
         NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)

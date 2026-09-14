@@ -1,0 +1,26 @@
+{
+  "dangers": [
+    {
+      "confidence": 1.0,
+      "id": 0,
+      "last_seen": 111.988,
+      "localization_health_counts": {
+        "STALE": 34
+      },
+      "observations": 34,
+      "position_variance": [
+        5.9e-05,
+        0.000752,
+        0.000382
+      ],
+      "position_world": [
+        -6.4719,
+        18.653,
+        -0.1473
+      ]
+    }
+  ],
+  "exploration_time": 157.5,
+  "floor_complete": false,
+  "frame_id": "world"
+}

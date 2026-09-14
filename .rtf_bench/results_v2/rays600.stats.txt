@@ -1,0 +1,4 @@
+Factor[0.07] SimTime[0.61] RealTime[25.81] Paused[F]
+Factor[0.08] SimTime[0.71] RealTime[27.02] Paused[F]
+Factor[0.08] SimTime[0.82] RealTime[28.20] Paused[F]
+Factor[0.08] SimTime[0.91] RealTime[29.40] Paused[F]

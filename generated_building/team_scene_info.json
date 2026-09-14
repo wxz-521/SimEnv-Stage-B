@@ -1,6 +1,6 @@
 {
   "allowed_interfaces": {
-    "result_file": "/home/ros/Guoyulun/Competition/SimEnv/results/detected_danger.json",
+    "result_file": "/workspace/SimEnv/results/detected_danger.json",
     "services": [
       "/set_door_state",
       "/call_elevator"

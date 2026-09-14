@@ -1,0 +1,142 @@
+xacro: in-order processing became default in ROS Melodic. You can drop the option.
+[0m[INFO] [1788650432.661286718]: Finished loading Gazebo ROS API Plugin.[0m
+[0m[INFO] [1788650432.661910230]: waitForService: Service [/gazebo/set_physics_properties] has not been advertised, waiting...[0m
+[0m[INFO] [1788650433.357206027]: waitForService: Service [/gazebo/set_physics_properties] is now available.[0m
+[0m[INFO] [1788650433.364440088]: Physics dynamic reconfigure ready.[0m
+[0m[INFO] [1788650433.651552269]: <initialOrientationAsReference> is unset, using default value of false to comply with REP 145 (world as orientation reference)[0m
+[0m[INFO] [1788650433.651603978]: <robotNamespace> set to: //[0m
+[0m[INFO] [1788650433.651613653]: <topicName> set to: trunk_imu[0m
+[0m[INFO] [1788650433.651620305]: <frameName> set to: imu_link[0m
+[0m[INFO] [1788650433.651640281]: <updateRateHZ> set to: 1000[0m
+[0m[INFO] [1788650433.651649767]: <gaussianNoise> set to: 0[0m
+[0m[INFO] [1788650433.651668981]: <xyzOffset> set to: 0 0 0[0m
+[0m[INFO] [1788650433.651696388]: <rpyOffset> set to: 0 -0 0[0m
+[0m[INFO] [1788650442.497329053]: load csv file name:/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/unitree_ros/robots/a1_description/scan_mode/mid360.csv[0m
+cannot convert str:
+data size:800000
+[INFO] [1788650432.641601, 0.000000]: Loading model XML from ros parameter robot_description
+[INFO] [1788650432.648885, 0.000000]: Waiting for service /gazebo/spawn_urdf_model
+[INFO] [1788650433.554070, 0.000000]: Calling service /gazebo/spawn_urdf_model
+[INFO] [1788650443.481258, 0.000000]: Spawn status: SpawnModel: Successfully spawned entity
+[WARN] [1788652905.761234, 161.960000]: Controller Spawner error while taking down controllers: unable to connect to service: [Errno 111] Connection refused
+[INFO] [1788650432.651308, 0.000000]: Blind range : 0.5 m
+[INFO] [1788650432.652761, 0.000000]: Angle filter : -7 ~ 55 deg
+[INFO] [1788650432.653750, 0.000000]: Use ground-truth odom for /livox/Pointcloud2: False
+[INFO] [1788650432.656114, 0.000000]: === Pointcloud2livox STARTED ===
+[INFO] [1788650432.656589, 0.000000]: Local sensor frame: laser_livox
+[31mWARNING: disk usage in log directory [/tmp/simenv-home/.ros/log] is over 1GB.
+It's recommended that you use the 'rosclean' command.[0m
+[31m[gazebo-1] process has died [pid 3900221, exit code -15, cmd /opt/ros/noetic/lib/gazebo_ros/gzserver -u -e ode /workspace/SimEnv/.baseline_runs/single_floor_808e8b3_attempt_2/runtime/generated_building/competition_scene.world __name:=gazebo __log:=/tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/gazebo-1.log].
+log file: /tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/gazebo-1*.log[0m
+[31m[robot_state_publisher-4] process has died [pid 3900228, exit code -15, cmd /opt/ros/noetic/lib/robot_state_publisher/robot_state_publisher /joint_states:=/a1_gazebo/joint_states __name:=robot_state_publisher __log:=/tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/robot_state_publisher-4.log].
+log file: /tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/robot_state_publisher-4*.log[0m
+... logging to /tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/roslaunch-xiejiaxue-System-Product-Name-3900183.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/unitree_guide/unitree_guide/launch/multi_floor_gazeboSim.launch
+[1mstarted roslaunch server http://xiejiaxue-System-Product-Name:34071/[0m
+
+SUMMARY
+========
+
+PARAMETERS
+ * /a1_gazebo/FL_calf_controller/joint: FL_calf_joint
+ * /a1_gazebo/FL_calf_controller/pid/d: 8.0
+ * /a1_gazebo/FL_calf_controller/pid/i: 0.0
+ * /a1_gazebo/FL_calf_controller/pid/p: 300.0
+ * /a1_gazebo/FL_calf_controller/type: unitree_legged_co...
+ * /a1_gazebo/FL_hip_controller/joint: FL_hip_joint
+ * /a1_gazebo/FL_hip_controller/pid/d: 5.0
+ * /a1_gazebo/FL_hip_controller/pid/i: 0.0
+ * /a1_gazebo/FL_hip_controller/pid/p: 100.0
+ * /a1_gazebo/FL_hip_controller/type: unitree_legged_co...
+ * /a1_gazebo/FL_thigh_controller/joint: FL_thigh_joint
+ * /a1_gazebo/FL_thigh_controller/pid/d: 8.0
+ * /a1_gazebo/FL_thigh_controller/pid/i: 0.0
+ * /a1_gazebo/FL_thigh_controller/pid/p: 300.0
+ * /a1_gazebo/FL_thigh_controller/type: unitree_legged_co...
+ * /a1_gazebo/FR_calf_controller/joint: FR_calf_joint
+ * /a1_gazebo/FR_calf_controller/pid/d: 8.0
+ * /a1_gazebo/FR_calf_controller/pid/i: 0.0
+ * /a1_gazebo/FR_calf_controller/pid/p: 300.0
+ * /a1_gazebo/FR_calf_controller/type: unitree_legged_co...
+ * /a1_gazebo/FR_hip_controller/joint: FR_hip_joint
+ * /a1_gazebo/FR_hip_controller/pid/d: 5.0
+ * /a1_gazebo/FR_hip_controller/pid/i: 0.0
+ * /a1_gazebo/FR_hip_controller/pid/p: 100.0
+ * /a1_gazebo/FR_hip_controller/type: unitree_legged_co...
+ * /a1_gazebo/FR_thigh_controller/joint: FR_thigh_joint
+ * /a1_gazebo/FR_thigh_controller/pid/d: 8.0
+ * /a1_gazebo/FR_thigh_controller/pid/i: 0.0
+ * /a1_gazebo/FR_thigh_controller/pid/p: 300.0
+ * /a1_gazebo/FR_thigh_controller/type: unitree_legged_co...
+ * /a1_gazebo/RL_calf_controller/joint: RL_calf_joint
+ * /a1_gazebo/RL_calf_controller/pid/d: 8.0
+ * /a1_gazebo/RL_calf_controller/pid/i: 0.0
+ * /a1_gazebo/RL_calf_controller/pid/p: 300.0
+ * /a1_gazebo/RL_calf_controller/type: unitree_legged_co...
+ * /a1_gazebo/RL_hip_controller/joint: RL_hip_joint
+ * /a1_gazebo/RL_hip_controller/pid/d: 5.0
+ * /a1_gazebo/RL_hip_controller/pid/i: 0.0
+ * /a1_gazebo/RL_hip_controller/pid/p: 100.0
+ * /a1_gazebo/RL_hip_controller/type: unitree_legged_co...
+ * /a1_gazebo/RL_thigh_controller/joint: RL_thigh_joint
+ * /a1_gazebo/RL_thigh_controller/pid/d: 8.0
+ * /a1_gazebo/RL_thigh_controller/pid/i: 0.0
+ * /a1_gazebo/RL_thigh_controller/pid/p: 300.0
+ * /a1_gazebo/RL_thigh_controller/type: unitree_legged_co...
+ * /a1_gazebo/RR_calf_controller/joint: RR_calf_joint
+ * /a1_gazebo/RR_calf_controller/pid/d: 8.0
+ * /a1_gazebo/RR_calf_controller/pid/i: 0.0
+ * /a1_gazebo/RR_calf_controller/pid/p: 300.0
+ * /a1_gazebo/RR_calf_controller/type: unitree_legged_co...
+ * /a1_gazebo/RR_hip_controller/joint: RR_hip_joint
+ * /a1_gazebo/RR_hip_controller/pid/d: 5.0
+ * /a1_gazebo/RR_hip_controller/pid/i: 0.0
+ * /a1_gazebo/RR_hip_controller/pid/p: 100.0
+ * /a1_gazebo/RR_hip_controller/type: unitree_legged_co...
+ * /a1_gazebo/RR_thigh_controller/joint: RR_thigh_joint
+ * /a1_gazebo/RR_thigh_controller/pid/d: 8.0
+ * /a1_gazebo/RR_thigh_controller/pid/i: 0.0
+ * /a1_gazebo/RR_thigh_controller/pid/p: 300.0
+ * /a1_gazebo/RR_thigh_controller/type: unitree_legged_co...
+ * /a1_gazebo/joint_state_controller/publish_rate: 1000
+ * /a1_gazebo/joint_state_controller/type: joint_state_contr...
+ * /gazebo/enable_ros_network: True
+ * /pointcloud2livox/laser_blind: 0.5
+ * /pointcloud2livox/max_angle: 55
+ * /pointcloud2livox/min_angle: -7
+ * /pointcloud2livox/use_ground_truth_odom: False
+ * /robot_description: <?xml version="1....
+ * /robot_name: a1
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+ * /use_sim_time: True
+ * /world_file: /workspace/SimEnv...
+
+NODES
+  /
+    gazebo (gazebo_ros/gzserver)
+    pointcloud2livox (unitree_guide/pointcloud2livox.py)
+    robot_state_publisher (robot_state_publisher/robot_state_publisher)
+    urdf_spawner (gazebo_ros/spawn_model)
+  /a1_gazebo/
+    controller_spawner (controller_manager/spawner)
+
+[1mROS_MASTER_URI=http://127.0.0.1:11320[0m
+]2;/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/unitree_guide/unitree_guide/launch/multi_floor_gazeboSim.launch http://127.0.0.1:11320
+[1mprocess[gazebo-1]: started with pid [3900221][0m
+[1mprocess[urdf_spawner-2]: started with pid [3900225][0m
+[1mprocess[a1_gazebo/controller_spawner-3]: started with pid [3900227][0m
+[1mprocess[robot_state_publisher-4]: started with pid [3900228][0m
+[1mprocess[pointcloud2livox-5]: started with pid [3900229][0m
+[1m[urdf_spawner-2] process has finished cleanly
+log file: /tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/urdf_spawner-2*.log[0m
+[1m[a1_gazebo/controller_spawner-3] process has finished cleanly
+log file: /tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/a1_gazebo-controller_spawner-3*.log[0m
+[1m[pointcloud2livox-5] process has finished cleanly
+log file: /tmp/simenv-home/.ros/log/630d5c70-a980-11f1-9012-5084929e6cf9/pointcloud2livox-5*.log[0m
+all processes on machine have died, roslaunch will exit
+shutting down processing monitor...
+... shutting down processing monitor complete
+[1mdone[0m

@@ -1,0 +1,12 @@
+{
+  "correct": 0,
+  "detected_count": 0,
+  "false_alarm_rate": 0.0,
+  "false_alarms": 0,
+  "floor_index": 0,
+  "missed": 3,
+  "passed": false,
+  "recall": 0.0,
+  "threshold": 1.0,
+  "truth_count": 3
+}

@@ -1,0 +1,17 @@
+[INFO] Realtime scheduler disabled. Set UNITREE_ENABLE_REALTIME=1 to request SCHED_FIFO.
+The control interface for ROS Gazebo simulation
+robot_name: a1
+controller dt: 0.002 s, frequency: 500.000 Hz
+/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/logs/policy_act_inference_stair.pt
+cuda::is_available():0
+load model is successed!
+load model to device!
+/workspace/SimEnv/.baseline_worktrees/single_floor_808e8b3/src/unitree_guide/logs/policy_act_inference_plane.pt
+plane policy preloaded successfully
+[INFO] Waiting for Gazebo joint state feedback before accepting stand command.
+[INFO] Gazebo joint state feedback is ready.
+Switched from passive to fixed stand
+Switched from fixed stand to RL
+[INFO] Entered RL /cmd_vel mode.
+[INFO] plane policy active
+Terminated

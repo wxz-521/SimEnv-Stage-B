@@ -1,0 +1,206 @@
+<launch>
+  <arg name="corridor_yaw" default="0.0"/>
+  <arg name="corridor_anchor_x" default="nan"/>
+  <arg name="corridor_anchor_y" default="nan"/>
+  <arg name="initial_corridor_context" default="false"/>
+  <!-- Public-start lobby to corridor distance; used as a bounded virtual
+       isolation gate before opening candidates are accepted. -->
+  <!-- The bounded transit edge is isolated from both the entrance and the
+       main-corridor candidate pool.  Stop about 3.5 m before the first door
+       station so detection and braking still finish before the opening. -->
+  <arg name="initial_forward_distance" default="14.5"/>
+  <arg name="entrance_gate_x" default="3.2"/>
+  <arg name="door_alignment_tolerance" default="0.12"/>
+  <!-- Legacy alias remains accepted; the explorer consumes the canonical
+       expected_rooms_per_floor parameter. -->
+  <arg name="expected_room_count" default="4"/>
+  <arg name="expected_rooms_per_floor" default="$(arg expected_room_count)"/>
+  <arg name="entry_validation_mode" default="false"/>
+  <arg name="result_dir" default="/workspace/SimEnv/results"/>
+
+  <node pkg="simnav" type="single_floor_explorer_node.py" name="single_floor_explorer" output="screen">
+    <param name="corridor_yaw" value="$(arg corridor_yaw)"/>
+    <param name="corridor_anchor_x" value="$(arg corridor_anchor_x)"/>
+    <param name="corridor_anchor_y" value="$(arg corridor_anchor_y)"/>
+    <param name="initial_corridor_context" value="$(arg initial_corridor_context)"/>
+    <param name="initial_forward_distance" value="$(arg initial_forward_distance)"/>
+    <param name="initial_forward_speed" value="0.60"/>
+    <param name="initial_centering_start_distance" value="10.5"/>
+    <param name="topology_gate_candidate_margin" value="0.25"/>
+    <param name="topology_gate_return_margin" value="0.75"/>
+    <param name="topology_gate_width" value="2.2"/>
+    <param name="opening_dedup_radius" value="2.0"/>
+    <!-- Keep a completed doorway's local station out of the pending queue.
+         This absorbs map fragments a few metres along the same jamb while
+         leaving genuinely separated rooms discoverable. -->
+    <param name="visited_door_revisit_radius" value="4.0"/>
+    <param name="visited_door_revisit_normal_gate" value="0.70"/>
+    <param name="prefer_opposite_door" value="true"/>
+    <!-- Select a usable single doorway immediately during the near-door
+         entry test.  The final far-first topology policy will group stations
+         explicitly instead of delaying on an implicit pair filter. -->
+    <param name="prefer_paired_station" value="false"/>
+    <param name="opposite_pair_station_tolerance" value="1.5"/>
+    <param name="opposite_door_probe_duration" value="2.0"/>
+    <param name="opening_observation_range" value="6.0"/>
+    <param name="door_detection_period" value="0.25"/>
+    <param name="scan_open_threshold" value="2.5"/>
+    <param name="scan_provisional_openings" value="true"/>
+    <param name="scan_provisional_samples" value="2"/>
+    <param name="scan_expected_door_width" value="1.2"/>
+    <param name="scan_open_min_width" value="0.65"/>
+    <param name="scan_open_max_width" value="1.75"/>
+    <param name="scan_leading_wall_min_length" value="0.25"/>
+    <param name="opening_min_width" value="0.65"/>
+    <param name="opening_max_width" value="1.75"/>
+    <param name="opening_min_jamb_wall_length" value="0.35"/>
+    <param name="opening_min_jamb_wall_support" value="0.35"/>
+    <param name="scan_corridor_evidence_length" value="2.0"/>
+    <param name="scan_corridor_min_width" value="1.7"/>
+    <param name="scan_corridor_max_width" value="2.7"/>
+    <param name="require_elongated_corridor" value="true"/>
+    <param name="door_verifier_enabled" value="false"/>
+    <param name="door_verifier_cloud_topic" value="/livox/Pointcloud2"/>
+    <param name="door_verifier_max_age" value="0.75"/>
+    <param name="door_verifier_stride" value="4"/>
+    <param name="door_verifier_max_points" value="6000"/>
+    <param name="door_verifier_min_points" value="16"/>
+    <param name="door_verifier_side_tolerance" value="0.28"/>
+    <param name="door_verifier_depth_tolerance" value="0.35"/>
+    <param name="door_verifier_min_jamb_height" value="0.80"/>
+    <!-- The entrance isolation gate and four-room topology bound false
+         positives.  Do not let a sparse 3-D jamb frame suppress a real door;
+         crossing safety is enforced later by metric centring and clearance. -->
+    <param name="door_scan_requires_verification" value="false"/>
+    <param name="corridor_evidence_length" value="5.0"/>
+    <param name="corridor_min_wall_support" value="0.40"/>
+    <param name="corridor_progress_step" value="1.0"/>
+    <param name="max_corridor_progress" value="45.0"/>
+    <param name="corridor_progress_speed" value="0.60"/>
+    <param name="corridor_turn_speed" value="1.0"/>
+    <param name="corridor_heading_timeout" value="18.0"/>
+    <param name="corridor_progress_timeout" value="15.0"/>
+    <!-- One bounded stall window is enough to trigger the configured reverse
+         sweep; continuing past the physical corridor end creates map-only
+         false door candidates. -->
+    <param name="max_corridor_stall_windows" value="1"/>
+    <param name="corridor_stop_distance" value="0.50"/>
+    <param name="corridor_scan_center_gain" value="0.12"/>
+    <param name="corridor_wall_avoid_distance" value="0.75"/>
+    <param name="corridor_wall_avoid_speed" value="0.0"/>
+    <param name="corridor_turn_clearance" value="1.2"/>
+    <param name="corridor_backoff_distance" value="0.5"/>
+    <param name="corridor_backoff_speed" value="0.6"/>
+    <param name="corridor_backoff_timeout" value="6.0"/>
+    <param name="max_corridor_sweeps" value="1"/>
+    <param name="expected_rooms_per_floor" value="$(arg expected_rooms_per_floor)"/>
+    <param name="entry_validation_mode" value="$(arg entry_validation_mode)"/>
+    <param name="entry_validation_hold" value="0.75"/>
+    <!-- The stair core is a vertical-transition opening, not a Stage B room door. -->
+    <rosparam param="defer_zones">[[[-2.4, 0.4], [-0.6, 0.4], [-0.6, 7.3], [-2.4, 7.3]]]</rosparam>
+    <param name="localization_timeout" value="1.0"/>
+    <param name="localization_degraded_translation" value="0.35"/>
+    <param name="localization_bad_translation" value="1.0"/>
+    <param name="localization_degraded_rotation" value="0.50"/>
+    <param name="localization_bad_rotation" value="1.20"/>
+    <param name="fusion_spatial_gate" value="2.0"/>
+    <param name="fusion_normal_gate" value="0.35"/>
+    <param name="fusion_strong_confidence" value="0.75"/>
+    <param name="fusion_medium_confidence" value="0.45"/>
+    <param name="crossing_speed" value="0.60"/>
+    <param name="minimum_cross_time" value="1.5"/>
+  <param name="inside_room_confirm_duration" value="0.5"/>
+  <param name="inside_room_entry_depth" value="0.65"/>
+  <param name="door_centering_tolerance" value="0.20"/>
+  <param name="door_crossing_lateral_tolerance" value="0.30"/>
+  <param name="door_crossing_minimum_travel" value="0.75"/>
+  <param name="door_centering_yaw_gain" value="0.90"/>
+  <param name="room_entry_advance_distance" value="1.0"/>
+  <param name="room_entry_advance_min_reachable_cells" value="12"/>
+    <param name="max_cross_time" value="14.0"/>
+    <param name="minimum_exit_time" value="1.0"/>
+    <param name="corridor_side_entry_depth" value="0.45"/>
+    <param name="corridor_reacquire_duration" value="0.7"/>
+    <param name="max_exit_time" value="14.0"/>
+    <param name="max_door_attempts" value="2"/>
+    <param name="max_exit_attempts" value="2"/>
+    <param name="room_motion_stop_distance" value="0.45"/>
+    <param name="pre_door_speed" value="0.45"/>
+    <param name="pre_door_timeout" value="30.0"/>
+    <param name="pre_door_face_stable_duration" value="0.25"/>
+    <param name="align_timeout" value="18.0"/>
+    <param name="align_speed" value="1.0"/>
+    <param name="door_alignment_tolerance" value="$(arg door_alignment_tolerance)"/>
+    <!-- Room-only topology-constrained information-gain frontier exploration.  The
+         corridor controller above is unchanged and never consumes these
+         parameters.  Body inflation and escape-space filtering keep the dog
+         out of wall seams and deep one-way pockets. -->
+    <!-- A1 footprint circumscribed radius is about 0.38 m.  Keep only a
+         small 0.04 m mapping/command margin; the old 0.60 m total was too
+         conservative for the generated small rooms. -->
+    <param name="room_robot_radius" value="0.38"/>
+    <param name="room_safety_margin" value="0.04"/>
+    <!-- The stair RL policy needs at least about 0.30 m/s to start a stable
+         gait; 0.45 m/s is the measured stable room-navigation command. -->
+    <param name="room_frontier_speed" value="0.45"/>
+    <param name="room_frontier_min_speed" value="0.30"/>
+    <!-- A committed target is kept until reached or invalidated.  This period
+         is used only to retry when no safe frontier currently exists. -->
+    <param name="room_frontier_replan_period" value="1.0"/>
+    <param name="room_frontier_target_tolerance" value="0.35"/>
+    <param name="room_frontier_quiet_period" value="2.0"/>
+    <param name="room_frontier_revalidate_margin" value="0.01"/>
+    <param name="room_frontier_coverage_target" value="0.80"/>
+    <!-- Laser remains the safety/reachability layer; RGB-D coverage drives
+         whether the room interior has actually been viewed. -->
+  <param name="camera_coverage_enabled" value="true"/>
+  <param name="camera_coverage_target" value="0.70"/>
+  <param name="camera_coverage_resolution" value="0.25"/>
+  <param name="camera_ring_enabled" value="true"/>
+  <param name="camera_ring_clockwise" value="true"/>
+  <param name="camera_ring_max_step" value="3.0"/>
+  <param name="camera_ring_min_obstacle_cells" value="8"/>
+  <param name="camera_sweep_enabled" value="true"/>
+  <param name="camera_sweep_speed" value="0.35"/>
+  <param name="camera_sweep_max_angle" value="6.283185307"/>
+    <!-- Select the largest bounded unknown-space gain after safety filtering;
+         distance is only a late tie-breaker. -->
+    <param name="room_information_gain_weight" value="1.0"/>
+    <param name="room_information_radius" value="2.5"/>
+    <param name="room_dead_end_weight" value="1.5"/>
+    <param name="room_frontier_heading_tolerance" value="0.25"/>
+    <param name="room_frontier_cluster_radius" value="0.45"/>
+    <param name="room_frontier_min_cluster_cells" value="3"/>
+    <param name="room_frontier_revisit_radius" value="0.75"/>
+    <param name="room_topology_entry_margin" value="0.35"/>
+    <param name="room_topology_max_depth" value="12.0"/>
+    <param name="room_topology_lateral_limit" value="8.0"/>
+    <param name="room_dead_end_path_threshold" value="1.5"/>
+    <param name="room_minimum_escape_cells" value="12"/>
+    <param name="fault_bad_localization_duration" value="1.0"/>
+    <param name="fault_low_points_duration" value="1.0"/>
+    <param name="fault_minimum_effective_points" value="5"/>
+    <param name="loop_voxel_size" value="0.10"/>
+    <param name="loop_max_correspondence" value="0.60"/>
+    <param name="loop_min_overlap" value="0.35"/>
+    <param name="loop_max_rmse" value="0.18"/>
+    <param name="loop_max_translation" value="1.0"/>
+    <param name="loop_max_rotation" value="0.12"/>
+    <param name="completion_quiet_period" value="3.0"/>
+    <param name="close_main_entrance" value="false"/>
+    <param name="close_floor_elevator" value="false"/>
+    <rosparam subst_value="true" param="entrance_gate">[[$(arg entrance_gate_x), -1.5], [$(arg entrance_gate_x), 1.5]]</rosparam>
+  </node>
+
+  <node pkg="simnav" type="danger_detector_node.py" name="danger_detector" output="screen">
+    <param name="confirmation_frames" value="3"/>
+    <param name="cluster_radius" value="0.75"/>
+    <param name="camera_observation_markers_enabled" value="true"/>
+    <param name="camera_observation_resolution" value="0.25"/>
+    <param name="camera_observation_pixel_stride" value="32"/>
+    <param name="camera_observation_max_cells" value="16000"/>
+    <param name="camera_observation_summary_period" value="0.50"/>
+    <param name="output_file" value="$(arg result_dir)/detected_danger.json"/>
+    <param name="debug_output_file" value="$(arg result_dir)/detected_danger_debug.json"/>
+  </node>
+</launch>

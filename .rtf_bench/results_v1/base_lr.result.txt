@@ -1,0 +1,1 @@
+tag=base_lr livox=1 realsense=1 controllers=0 samples=5 rtf_median=0.080 rtf_max=0.080 sim=2.11 real=45.66

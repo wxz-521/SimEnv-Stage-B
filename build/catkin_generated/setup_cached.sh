@@ -7,4 +7,4 @@
 # new environment variables
 
 # modified environment variables
-export PWD='/home/ros/Guoyulun/Competition/SimEnv/build'
+export PWD='/workspace/SimEnv/build'

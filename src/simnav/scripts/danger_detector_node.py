@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(rospkg.RosPack().get_path("simnav")) / "scripts"))
 from danger_detector_core import (  # noqa: E402
     CameraIntrinsics,
     DangerTracker,
-    project_pose_from_anchor,
     RedBallDetector,
     ResultWriter,
     position_on_floor,
@@ -80,17 +79,13 @@ class DangerDetectorNode:
         self.tf_rejected_total = 0
         self.floor_rejected_total = 0
         self.last_red_stats = {}
-        self.scan_frequency = float(rospy.get_param("~scan_frequency", 15.0))
         self.last_process_time = rospy.Time(0)
-        self.room_scanning = False
         self.observation_phase = ""
         self.floor_complete = False
         self.mission_fault = False
         self.mission_fault_reason = None
         self.room_entry_pose = None
-        self.room_entry_source_pose = None
         self.source_pose = None
-        self.source_pose_stamp = rospy.Time(0)
         self.localization_health = "STALE"
         self.start_time = None
         self.pending_timeout = float(rospy.get_param("~pending_timeout", 1.0))
@@ -223,14 +218,8 @@ class DangerDetectorNode:
     def _status_callback(self, message):
         try:
             payload = json.loads(message.data)
-            state = payload.get("state")
             corridor_ready = bool(payload.get("camera_exploration_active", False))
             topology_lock = payload.get("topology_lock")
-            self.room_scanning = state in (
-                "DOOR_CROSSING",
-                "ROOM_SCAN",
-                "EXIT_ROOM",
-            )
             with self.lock:
                 scope_type = self.camera_scope_type
                 scope_id = self.camera_room_id
@@ -257,16 +246,7 @@ class DangerDetectorNode:
                     self.camera_room_active = False
                     self.camera_room_id = None
                     self.camera_scope_type = None
-            if state == "ROOM_SCAN":
-                self.observation_phase = payload.get("room_scan_phase") or "ROOM_FRONTIER_EXPLORE"
-            elif state == "DOOR_CROSSING":
-                self.observation_phase = "INGRESS_SCAN"
-            elif state == "EXIT_ROOM":
-                self.observation_phase = "EGRESS_SCAN"
-            else:
-                self.observation_phase = ""
         except (TypeError, ValueError):
-            self.room_scanning = False
             self.observation_phase = ""
 
     def _activate_camera_scope(self, scope_id, scope_type, reset_global=False):
@@ -321,7 +301,6 @@ class DangerDetectorNode:
         )
         with self.lock:
             self.source_pose = source_pose
-            self.source_pose_stamp = message.header.stamp
 
     def _complete_callback(self, message):
         self.floor_complete = bool(message.data)
@@ -339,7 +318,6 @@ class DangerDetectorNode:
         with self.lock:
             self.current_floor_z = floor_z
             self.floor_complete = False
-            self.room_scanning = False
             self.camera_room_id = None
             self.camera_room_active = False
             self.camera_scope_type = None
@@ -367,7 +345,6 @@ class DangerDetectorNode:
             if pose and len(pose) >= 3 and candidate_id:
                 with self.lock:
                     self.room_entry_pose = tuple(float(value) for value in pose[:3])
-                    self.room_entry_source_pose = self.source_pose
                 self._activate_camera_scope(candidate_id, "room")
         except (TypeError, ValueError):
             return
@@ -419,28 +396,7 @@ class DangerDetectorNode:
             float(metric_roll),
             float(metric_pitch),
         )
-        with self.lock:
-            room_scanning = self.room_scanning
-            room_entry_pose = self.room_entry_pose
-            room_entry_source_pose = self.room_entry_source_pose
-            source_pose = self.source_pose
-            source_stamp = self.source_pose_stamp
-        if (
-            not room_scanning
-            or room_entry_pose is None
-            or room_entry_source_pose is None
-            or source_pose is None
-        ):
-            return fallback
-        if stamp != rospy.Time(0) and source_stamp != rospy.Time(0):
-            if abs((stamp - source_stamp).to_sec()) > 0.5:
-                return fallback
-        projected = project_pose_from_anchor(
-            source_pose,
-            room_entry_source_pose,
-            room_entry_pose,
-        )
-        return projected + (metric_roll, metric_pitch)
+        return fallback
 
     def _image_callback(self, rgb_message, depth_message):
         if self.mission_fault:
@@ -453,7 +409,7 @@ class DangerDetectorNode:
         if not camera_exploration_active:
             self.rgb_skipped_scope += 1
             return
-        frequency = self.scan_frequency if self.room_scanning else self.moving_frequency
+        frequency = self.moving_frequency
         stamp = rgb_message.header.stamp if rgb_message.header.stamp != rospy.Time() else rospy.Time.now()
         if self.last_process_time != rospy.Time(0) and (stamp - self.last_process_time).to_sec() < 1.0 / frequency:
             self.rgb_skipped_rate += 1
@@ -904,7 +860,6 @@ class DangerDetectorNode:
         exploration_time = 0.0
         if self.start_time is not None and stamp >= self.start_time:
             exploration_time = (stamp - self.start_time).to_sec()
-        now = stamp.to_sec()
         with self.result_lock:
             confirmed = self.tracker.confirmed()
             self.result_writer.write(
@@ -914,11 +869,7 @@ class DangerDetectorNode:
                 frame_id=self.world_frame,
                 floor_complete=self.floor_complete,
             )
-            confirmation_active = self.room_scanning and any(
-                track.observations < self.tracker.confirmation_frames
-                and now - track.last_seen <= self.pending_timeout
-                for track in self.tracker.tracks
-            )
+            confirmation_active = False
         self.confirmation_pub.publish(Bool(data=confirmation_active))
 
 

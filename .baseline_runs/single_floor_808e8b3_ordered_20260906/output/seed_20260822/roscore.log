@@ -1,0 +1,23 @@
+[31mWARNING: disk usage in log directory [/tmp/simenv-home/.ros/log] is over 1GB.
+It's recommended that you use the 'rosclean' command.[0m
+[31mRLException: roscore cannot run as another roscore/master is already running. 
+Please kill other roscore/master processes before relaunching.
+The ROS_MASTER_URI is http://xiejiaxue-System-Product-Name:11320/[0m
+[31mThe traceback for the exception was written to the log file[0m
+... logging to /tmp/simenv-home/.ros/log/d0dd5666-a993-11f1-b3a6-5084929e6cf9/roslaunch-xiejiaxue-System-Product-Name-3917976.log
+Checking log directory for disk usage. This may take a while.
+Press Ctrl-C to interrupt
+]2;roscore
+[1mstarted roslaunch server http://xiejiaxue-System-Product-Name:39277/[0m
+ros_comm version 1.17.4
+
+
+SUMMARY
+========
+
+PARAMETERS
+ * /rosdistro: noetic
+ * /rosversion: 1.17.4
+
+NODES
+

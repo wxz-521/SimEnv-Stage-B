@@ -1,0 +1,1 @@
+tag=nors livox=1 realsense=0 controllers=0 samples=5 rtf_median=0.070 rtf_max=0.080 sim=2.81 real=45.63

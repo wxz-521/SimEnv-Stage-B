@@ -43,10 +43,10 @@ RM = /usr/bin/cmake -E remove -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/ros/Guoyulun/Competition/SimEnv/src
+CMAKE_SOURCE_DIR = /workspace/SimEnv/src
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/ros/Guoyulun/Competition/SimEnv/build
+CMAKE_BINARY_DIR = /workspace/SimEnv/build
 
 # Utility rule file for tf_generate_messages_eus.
 
@@ -63,10 +63,10 @@ unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.di
 .PHONY : unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/build
 
 unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/clean:
-	cd /home/ros/Guoyulun/Competition/SimEnv/build/unitree_guide/unitree_guide/unitree_guide && $(CMAKE_COMMAND) -P CMakeFiles/tf_generate_messages_eus.dir/cmake_clean.cmake
+	cd /workspace/SimEnv/build/unitree_guide/unitree_guide/unitree_guide && $(CMAKE_COMMAND) -P CMakeFiles/tf_generate_messages_eus.dir/cmake_clean.cmake
 .PHONY : unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/clean
 
 unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/depend:
-	cd /home/ros/Guoyulun/Competition/SimEnv/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/ros/Guoyulun/Competition/SimEnv/src /home/ros/Guoyulun/Competition/SimEnv/src/unitree_guide/unitree_guide/unitree_guide /home/ros/Guoyulun/Competition/SimEnv/build /home/ros/Guoyulun/Competition/SimEnv/build/unitree_guide/unitree_guide/unitree_guide /home/ros/Guoyulun/Competition/SimEnv/build/unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/DependInfo.cmake --color=$(COLOR)
+	cd /workspace/SimEnv/build && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /workspace/SimEnv/src /workspace/SimEnv/src/unitree_guide/unitree_guide/unitree_guide /workspace/SimEnv/build /workspace/SimEnv/build/unitree_guide/unitree_guide/unitree_guide /workspace/SimEnv/build/unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : unitree_guide/unitree_guide/unitree_guide/CMakeFiles/tf_generate_messages_eus.dir/depend
 

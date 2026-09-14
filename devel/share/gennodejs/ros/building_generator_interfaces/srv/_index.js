@@ -1,10 +1,10 @@
 
 "use strict";
 
-let SetDoorState = require('./SetDoorState.js')
 let CallElevator = require('./CallElevator.js')
+let SetDoorState = require('./SetDoorState.js')
 
 module.exports = {
-  SetDoorState: SetDoorState,
   CallElevator: CallElevator,
+  SetDoorState: SetDoorState,
 };
